@@ -1,0 +1,9 @@
+streamlit
+librosa
+numpy
+pandas
+scipy
+plotly
+soundfile
+pydub
+python-dotenv
