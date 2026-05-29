@@ -4,6 +4,7 @@ numpy
 pandas
 scipy
 plotly
+kaleido
 soundfile
 pydub
 python-dotenv
