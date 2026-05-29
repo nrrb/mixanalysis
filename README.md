@@ -11,6 +11,8 @@ streamlit run app.py
 
 The current proof of concept supports uploading one or more MP3, WAV, or M4A files, then produces labeled timelines, event candidates, plain-English summaries, and debug feature tables.
 
+Feature extraction has been optimized so a typical 38-minute mix analyzes end-to-end in a few seconds (roughly 7x faster overall, ~12x faster in the analysis stage) without changing the resulting windows or labels. See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for benchmarks and the reasoning behind each change.
+
 ## Current scope
 
 Implemented:
@@ -18,7 +20,7 @@ Implemented:
 - Streamlit upload UI.
 - Local uploaded-file cache.
 - Audio loading with `librosa`.
-- Windowed feature extraction with `pandas`.
+- Windowed feature extraction with `pandas`, built on a single shared STFT for speed.
 - Plain-English pressure labels.
 - Relief labels and possible-vocal proxy labels.
 - Deterministic mix summaries and learning notes.
@@ -27,6 +29,7 @@ Implemented:
 - Multi-mix comparison strips and comparison summaries.
 - Mix character cards for comparing pressure timing, relief, possible vocals, transitions, and sustained pressure.
 - Cached analysis for repeated runs with the same file and settings.
+- Optimized analysis pipeline (shared STFT, coarser internal hop, `chroma_stft`, `soxr_lq` decode).
 - Basic unsupported-file and empty-audio error handling.
 - Clear warnings that analysis labels are estimates.
 - Debug data tab for inspecting extracted features.

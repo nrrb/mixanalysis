@@ -156,8 +156,8 @@ Implementation notes:
 - Streamlit uploaded files are file-like objects, so save them to a temporary file before passing to librosa if needed.
 - Use `librosa.load` for decoding.
 - Use mono audio for the POC.
-- Downsample to 22050 Hz for speed.
-- Long DJ mixes may be slow. Add a clear spinner/status message while analyzing.
+- Downsample to 22050 Hz for speed. This is an exact 2:1 ratio from 44.1 kHz source audio, so decode with `res_type="soxr_lq"` for a fast, good-enough resample.
+- Long DJ mixes used to be slow; after the Phase 9 optimizations a 38-minute mix analyzes in a few seconds. Still add a clear spinner/status message while analyzing.
 
 ## Feature extraction
 
@@ -198,7 +198,14 @@ def analyze_audio_windows(
 
 Use librosa to compute frame-level features first, then aggregate into larger windows.
 
-Suggested frame-level features:
+> **Note (Phase 9):** the original approach below let each feature recompute its
+> own spectral transform, which was the dominant cost. The shipped implementation
+> computes a single `|STFT|` once and derives rms/centroid/bandwidth/flatness/
+> chroma/bass from it, uses `chroma_stft(tuning=0.0)` instead of `chroma_cqt`,
+> coarsens the internal `hop_length` to 1024, and reuses the precomputed onset
+> envelope for the tempo estimate. See [OPTIMIZATIONS.md](OPTIMIZATIONS.md).
+
+Suggested frame-level features (original, pre-optimization sketch):
 
 ```python
 rms = librosa.feature.rms(y=y)
@@ -785,6 +792,25 @@ Audit every place in the app that shows a time value and replace raw seconds wit
 - Any debug or status text that shows timestamps.
 
 The `format_time` helper already outputs zero-padded MM:SS (e.g., `06:31`). Do not display bare seconds like `391` anywhere in the user-facing UI after this phase.
+
+### Phase 9: Performance optimization (complete)
+
+Feature extraction dominated analysis time, so the pipeline was profiled and tuned. All changes are algorithmic and add no new dependencies; output windows and labels are unchanged.
+
+`src/features.py`:
+
+- Compute one `|STFT|` and derive rms/centroid/bandwidth/flatness/chroma/bass from it instead of letting each feature recompute its own transform.
+- Replace `chroma_cqt` with `chroma_stft(tuning=0.0)`, skipping the slow CQT and the hidden per-call tuning estimation.
+- Coarsen the internal `hop_length` from 512 to 1024 (output windows are 5–30 s, so ~23 ms frames were wildly oversampled).
+- Reuse the precomputed onset envelope for the tempo estimate.
+- Vectorize per-window aggregation with `searchsorted` instead of building a boolean mask over all frames per window.
+- Fixed latent bugs: `rms(S=...)` needs an explicit `frame_length`, and a missing `librosa.feature.rhythm` import was leaving `local_tempo` silently `nan`.
+
+`src/audio_io.py`:
+
+- Decode with `res_type="soxr_lq"` at `sr=22050` (exact 2:1 from 44.1 kHz).
+
+Results: on a real 38-minute mix, end-to-end time dropped from 40.76 s to 5.73 s (7.1x), with the analysis stage ~12x faster, identical 461 windows, and 32/35 events aligning within 5 s of the baseline. App-level parallelism across files was investigated and rejected as slower (the pipeline is memory-bandwidth bound and NumPy/SciPy already use multiple cores via macOS Accelerate). Full benchmarks, the quality comparison, and rejected ideas live in [OPTIMIZATIONS.md](OPTIMIZATIONS.md).
 
 ## Important implementation details
 
