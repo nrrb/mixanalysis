@@ -57,10 +57,6 @@ def _apply_base_theme(fig: go.Figure) -> None:
         plot_bgcolor=BG_COLOR,
         font=dict(family=FONT_FAMILY, color=TEXT_COLOR),
         legend=dict(font=dict(color=TEXT_COLOR)),
-        # Style the title font without materializing an empty title object: a
-        # bare title.font with no text makes Plotly.js render the literal string
-        # "undefined". Only set the font when a chart actually has title text.
-        title=dict(font=dict(family=FONT_FAMILY, color=TEXT_COLOR)) if fig.layout.title.text else None,
     )
     fig.update_xaxes(
         gridcolor=GRID_COLOR,
@@ -110,12 +106,13 @@ def make_flow_map(df: pd.DataFrame, events: list[MixEvent]) -> go.Figure:
 
     _add_event_markers(fig, events, y=0.0)
     fig.update_layout(
+        title="Flow Map",
         barmode="stack",
         height=250,
         xaxis_title="Time",
         yaxis_title="",
         legend_title_text="Pressure",
-        margin=dict(l=20, r=20, t=30, b=30),
+        margin=dict(l=20, r=20, t=50, b=30),
     )
     fig.update_xaxes(tickvals=tickvals, ticktext=ticktext)
     fig.update_yaxes(showticklabels=False)
@@ -198,6 +195,7 @@ def make_pressure_silhouette(
     )
     _add_event_markers(fig, events)
     fig.update_layout(
+        title="Pressure Shape",
         height=320,
         xaxis_title="Time",
         yaxis=dict(
@@ -207,7 +205,7 @@ def make_pressure_silhouette(
             ticktext=["low", "groove", "full", "peak"],
             range=[0, 1.05],
         ),
-        margin=dict(l=20, r=20, t=30, b=30),
+        margin=dict(l=20, r=20, t=50, b=30),
         showlegend=False,
     )
     fig.update_xaxes(tickvals=tickvals, ticktext=ticktext)
@@ -267,11 +265,12 @@ def make_layered_presence_map(df: pd.DataFrame, events: list[MixEvent]) -> go.Fi
         )
 
     fig.update_layout(
+        title="Presence Map",
         barmode="stack",
         height=320,
         xaxis_title="Time",
         yaxis_title="",
-        margin=dict(l=20, r=20, t=30, b=30),
+        margin=dict(l=20, r=20, t=50, b=30),
     )
     fig.update_xaxes(tickvals=tickvals, ticktext=ticktext)
     _apply_base_theme(fig)
