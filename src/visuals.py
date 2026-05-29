@@ -2,6 +2,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from src.events import MixEvent
+from src.utils import format_duration, make_time_ticks
 
 
 PRESSURE_COLORS = {
@@ -28,7 +29,13 @@ def make_flow_map(df: pd.DataFrame, events: list[MixEvent]) -> go.Figure:
     if df.empty:
         return _empty_figure("No flow data available")
 
+    duration = float(df["end_time"].max())
+    tickvals, ticktext = make_time_ticks(duration)
+
     for label, group in df.groupby("pressure_label", sort=False):
+        start_fmt = group["start_time"].apply(format_duration)
+        end_fmt = group["end_time"].apply(format_duration)
+        customdata = list(zip(start_fmt, end_fmt, group["relief_type"]))
         fig.add_trace(
             go.Bar(
                 x=group["end_time"] - group["start_time"],
@@ -37,9 +44,9 @@ def make_flow_map(df: pd.DataFrame, events: list[MixEvent]) -> go.Figure:
                 orientation="h",
                 name=label,
                 marker_color=PRESSURE_COLORS.get(label, "#adb5bd"),
-                customdata=group[["start_time", "end_time", "relief_type"]],
+                customdata=customdata,
                 hovertemplate=(
-                    "%{customdata[0]:.0f}s-%{customdata[1]:.0f}s<br>"
+                    "%{customdata[0]}–%{customdata[1]}<br>"
                     f"{label}<br>%{{customdata[2]}}<extra></extra>"
                 ),
             )
@@ -54,6 +61,7 @@ def make_flow_map(df: pd.DataFrame, events: list[MixEvent]) -> go.Figure:
         legend_title_text="Pressure",
         margin=dict(l=20, r=20, t=30, b=30),
     )
+    fig.update_xaxes(tickvals=tickvals, ticktext=ticktext)
     fig.update_yaxes(showticklabels=False)
     return fig
 
@@ -63,7 +71,11 @@ def make_pressure_silhouette(df: pd.DataFrame, events: list[MixEvent]) -> go.Fig
     if df.empty:
         return _empty_figure("No pressure data available")
 
+    duration = float(df["end_time"].max())
+    tickvals, ticktext = make_time_ticks(duration)
+
     x = (df["start_time"] + df["end_time"]) / 2
+    x_fmt = x.apply(format_duration)
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -75,7 +87,8 @@ def make_pressure_silhouette(df: pd.DataFrame, events: list[MixEvent]) -> go.Fig
             fillcolor="rgba(42, 157, 143, 0.24)",
             name="Pressure shape",
             text=df["pressure_label"],
-            hovertemplate="%{x:.0f}s<br>%{text}<extra></extra>",
+            customdata=x_fmt,
+            hovertemplate="%{customdata}<br>%{text}<extra></extra>",
         )
     )
     _add_event_markers(fig, events)
@@ -92,6 +105,7 @@ def make_pressure_silhouette(df: pd.DataFrame, events: list[MixEvent]) -> go.Fig
         margin=dict(l=20, r=20, t=30, b=30),
         showlegend=False,
     )
+    fig.update_xaxes(tickvals=tickvals, ticktext=ticktext)
     return fig
 
 
@@ -99,6 +113,9 @@ def make_layered_presence_map(df: pd.DataFrame, events: list[MixEvent]) -> go.Fi
     """Create a lane-based timeline of mix characteristics."""
     if df.empty:
         return _empty_figure("No presence data available")
+
+    duration = float(df["end_time"].max())
+    tickvals, ticktext = make_time_ticks(duration)
 
     lanes = [
         ("Pressure", df["pressure_score"] >= 0.62, "#fb8500"),
@@ -125,6 +142,9 @@ def make_layered_presence_map(df: pd.DataFrame, events: list[MixEvent]) -> go.Fi
                 )
             )
             continue
+        start_fmt = active["start_time"].apply(format_duration)
+        end_fmt = active["end_time"].apply(format_duration)
+        customdata = list(zip(start_fmt, end_fmt))
         fig.add_trace(
             go.Bar(
                 x=active["end_time"] - active["start_time"],
@@ -133,7 +153,8 @@ def make_layered_presence_map(df: pd.DataFrame, events: list[MixEvent]) -> go.Fi
                 orientation="h",
                 marker_color=color,
                 name=lane,
-                hovertemplate=f"{lane}<br>%{{base:.0f}}s-%{{x:.0f}}s<extra></extra>",
+                customdata=customdata,
+                hovertemplate=f"{lane}<br>%{{customdata[0]}}–%{{customdata[1]}}<extra></extra>",
                 showlegend=False,
             )
         )
@@ -145,6 +166,7 @@ def make_layered_presence_map(df: pd.DataFrame, events: list[MixEvent]) -> go.Fi
         yaxis_title="",
         margin=dict(l=20, r=20, t=30, b=30),
     )
+    fig.update_xaxes(tickvals=tickvals, ticktext=ticktext)
     return fig
 
 
@@ -154,9 +176,14 @@ def make_comparison_strips(results: list) -> go.Figure:
     if not results:
         return _empty_figure("No mixes available")
 
+    non_empty = [r for r in results if not r.feature_df.empty]
+    duration = float(max(r.feature_df["end_time"].max() for r in non_empty)) if non_empty else 0.0
+    tickvals, ticktext = make_time_ticks(duration)
+
     for result in results:
         df = result.feature_df
         for label, group in df.groupby("pressure_label", sort=False):
+            start_fmt = list(group["start_time"].apply(format_duration))
             fig.add_trace(
                 go.Bar(
                     x=group["end_time"] - group["start_time"],
@@ -167,7 +194,8 @@ def make_comparison_strips(results: list) -> go.Figure:
                     name=label,
                     legendgroup=label,
                     showlegend=not any(trace.name == label for trace in fig.data),
-                    hovertemplate=f"{result.name}<br>{label}<br>%{{base:.0f}}s<extra></extra>",
+                    customdata=start_fmt,
+                    hovertemplate=f"{result.name}<br>{label}<br>%{{customdata}}<extra></extra>",
                 )
             )
 
@@ -179,6 +207,7 @@ def make_comparison_strips(results: list) -> go.Figure:
         legend_title_text="Pressure",
         margin=dict(l=20, r=20, t=30, b=30),
     )
+    fig.update_xaxes(tickvals=tickvals, ticktext=ticktext)
     return fig
 
 

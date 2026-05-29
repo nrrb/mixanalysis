@@ -722,6 +722,70 @@ The POC is complete when:
 - Add clear warnings that event labels are estimates.
 - Add sample output screenshots later.
 
+### Phase 8: Contextual Help and Universal Time Formatting
+
+#### Contextual help for sidebar controls
+
+Add a `help=` tooltip to every Streamlit sidebar widget so users understand what each setting does without external documentation.
+
+Use Streamlit's built-in `help` parameter, which adds a hoverable `?` icon next to the control.
+
+Suggested tooltip copy for each control:
+
+**Analysis window** (`window_seconds` slider):
+> Controls how many seconds of audio are grouped together for each analysis snapshot. Larger values (20–30 s) smooth out noise and reveal broad patterns; smaller values (5–8 s) capture faster-moving moments like quick transitions or brief relief pockets. Default 10 s works well for most mixes.
+
+**Timeline detail** (`hop_seconds` slider):
+> How often a new analysis snapshot is taken. Smaller values produce more data points and smoother transitions in the charts, at the cost of longer analysis time. If the hop is equal to the window, there is no overlap; lower values add overlap and increase granularity. Default 5 s gives good resolution without being too slow.
+
+**Event sensitivity** (`sensitivity` selectbox):
+> How readily the analyzer flags key moments.
+> - Conservative: only reports events with strong, consistent evidence. Fewer results, higher confidence.
+> - Balanced: moderate threshold, good starting point for most mixes.
+> - Sensitive: catches subtle pressure shifts and smaller transitions, but may include more false positives. Useful for low-energy or ambient mixes.
+
+**Minimum event spacing** (`min_event_spacing` slider/input, if exposed):
+> Prevents two events of the same type from being flagged too close together. Increase this to declutter busy sections; decrease it to see more granular detail in a complex part of the mix.
+
+**Analysis mode** (`analysis_mode` selectbox):
+> Fast mode uses a lighter feature set for quicker results. Future modes (Detailed, Deep) may add source separation and more precise tempo tracking.
+
+#### Universal MM:SS time formatting
+
+Apply `format_time` (already defined in the implementation details section) to every time display in the app — not just event card timestamps.
+
+**Plotly chart axes:**
+
+Since Plotly x-axes hold raw seconds as floats, configure custom tick labels using `tickvals` and `ticktext`:
+
+```python
+def make_time_ticks(duration_seconds: float, max_ticks: int = 12) -> tuple[list[float], list[str]]:
+    """Return tick positions and MM:SS labels for a Plotly time axis."""
+    interval = max(60, round(duration_seconds / max_ticks / 60) * 60)
+    vals = list(range(0, int(duration_seconds) + 1, interval))
+    labels = [format_time(v) for v in vals]
+    return vals, labels
+```
+
+Apply to every `Figure` that has a time x-axis:
+
+```python
+tickvals, ticktext = make_time_ticks(duration)
+fig.update_xaxes(tickvals=tickvals, ticktext=ticktext)
+```
+
+**All other time displays:**
+
+Audit every place in the app that shows a time value and replace raw seconds with `format_time(seconds)`:
+
+- Event card timestamps in the Key Moments tab.
+- Top key moments listed in the Mix Report tab.
+- Hover text on all Plotly charts (e.g., `customdata` or `hovertemplate` using pre-formatted strings).
+- Comparison strip axis labels.
+- Any debug or status text that shows timestamps.
+
+The `format_time` helper already outputs zero-padded MM:SS (e.g., `06:31`). Do not display bare seconds like `391` anywhere in the user-facing UI after this phase.
+
 ## Important implementation details
 
 ### Time formatting

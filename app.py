@@ -123,15 +123,63 @@ _render_estimate_warning()
 
 with st.sidebar:
     st.header("Analysis Controls")
-    window_seconds = st.slider("Analysis window", 5, 30, 10)
-    hop_seconds = st.slider("Timeline detail", 2, 15, 5)
+    window_seconds = st.slider(
+        "Analysis window (s)",
+        5,
+        30,
+        10,
+        help=(
+            "How many seconds of audio are grouped into each analysis snapshot. "
+            "Larger values (20–30 s) smooth out noise and reveal broad patterns. "
+            "Smaller values (5–8 s) capture faster-moving moments like quick transitions. "
+            "Default 10 s works well for most mixes."
+        ),
+    )
+    hop_seconds = st.slider(
+        "Timeline detail (s)",
+        2,
+        15,
+        5,
+        help=(
+            "How often a new snapshot is taken. Smaller values produce more data points "
+            "and smoother charts, at the cost of longer analysis time. "
+            "Setting this equal to the window gives no overlap; lower values add granularity. "
+            "Default 5 s is a good balance."
+        ),
+    )
     sensitivity = st.selectbox(
         "Event sensitivity",
         ["conservative", "balanced", "sensitive"],
         index=1,
+        help=(
+            "How readily the analyzer flags key moments.\n\n"
+            "Conservative — fewer results, higher confidence.\n\n"
+            "Balanced — good starting point for most mixes.\n\n"
+            "Sensitive — catches subtle shifts but may include more false positives; "
+            "useful for low-energy or ambient mixes."
+        ),
     )
-    minimum_event_spacing = st.slider("Minimum event spacing", 10, 90, 30)
-    analysis_mode = st.selectbox("Analysis mode", ["fast"], index=0)
+    minimum_event_spacing = st.slider(
+        "Minimum event spacing (s)",
+        10,
+        90,
+        30,
+        help=(
+            "Minimum gap in seconds between two events of the same type. "
+            "Increase this to declutter busy sections; decrease it to see more "
+            "granular detail. Default 30 s prevents event clustering in dense passages."
+        ),
+    )
+    analysis_mode = st.selectbox(
+        "Analysis mode",
+        ["fast"],
+        index=0,
+        help=(
+            "Fast mode uses a lighter feature set for quick results. "
+            "Future modes (Detailed, Deep) will add source separation "
+            "and more precise tempo tracking."
+        ),
+    )
     analyze_clicked = st.button("Analyze mixes", type="primary")
 
 tabs = st.tabs(
