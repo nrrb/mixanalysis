@@ -1,5 +1,7 @@
+import json
 from pathlib import Path
 
+import plotly.graph_objects as go
 import streamlit as st
 
 from src.audio_io import load_audio, save_uploaded_bytes
@@ -9,10 +11,14 @@ from src.features import analyze_audio_windows
 from src.summaries import assign_pressure_labels, summarize_mix
 from src.utils import MixAnalysisResult, format_duration
 from src.visuals import (
+    SOCIAL_ASPECT_LABELS,
+    SOCIAL_SIZES,
     make_comparison_strips,
     make_flow_map,
     make_layered_presence_map,
     make_pressure_silhouette,
+    make_suggestion_card_figure,
+    render_social_image,
 )
 
 
@@ -111,6 +117,75 @@ def _render_comparison_card(profile) -> None:
 
 def _percent(value: float) -> str:
     return f"{round(value * 100):.0f}%"
+
+
+def _safe_stem(name: str) -> str:
+    stem = Path(name).stem.lower()
+    return "".join(ch if ch.isalnum() else "-" for ch in stem).strip("-") or "mix"
+
+
+@st.cache_data(show_spinner=False)
+def _social_png(
+    fig_json: str,
+    aspect: str,
+    title: str,
+    subtitle: str,
+    lanes: int,
+    fit_plot: bool,
+    keep_annotations: bool,
+) -> bytes:
+    """Render a figure (passed as JSON so it is cacheable) to social PNG bytes."""
+    fig = go.Figure(json.loads(fig_json))
+    return render_social_image(
+        fig,
+        aspect,
+        title,
+        subtitle,
+        lanes=lanes,
+        fit_plot=fit_plot,
+        keep_annotations=keep_annotations,
+    )
+
+
+def _render_share_section(specs: list[dict], key_prefix: str) -> None:
+    """Render a 'shareable social images' block with download buttons.
+
+    Image generation (kaleido) is gated behind a button so it only runs when the
+    user wants it, and cached so it is not repeated on every rerun.
+    """
+    st.markdown("#### Shareable social images")
+    st.caption(
+        "High-resolution square (1:1) and vertical (9:16) PNGs in the app's color "
+        "theme, ready to post to social media."
+    )
+    prepared_key = f"share_ready_{key_prefix}"
+    if st.button("Prepare shareable images", key=f"prep_{key_prefix}"):
+        st.session_state[prepared_key] = True
+    if not st.session_state.get(prepared_key):
+        return
+
+    with st.spinner("Rendering shareable images..."):
+        for spec in specs:
+            fig_json = spec["fig"].to_json()
+            st.markdown(f"**{spec['label']}**")
+            cols = st.columns(len(SOCIAL_SIZES))
+            for col, aspect in zip(cols, SOCIAL_SIZES):
+                png = _social_png(
+                    fig_json,
+                    aspect,
+                    spec["title"],
+                    spec.get("subtitle", ""),
+                    spec.get("lanes", 1),
+                    spec.get("fit_plot", True),
+                    spec.get("keep_annotations", False),
+                )
+                col.download_button(
+                    SOCIAL_ASPECT_LABELS[aspect],
+                    data=png,
+                    file_name=f"{spec['stem']}_{aspect}.png",
+                    mime="image/png",
+                    key=f"{key_prefix}_{spec['stem']}_{aspect}",
+                )
 
 
 st.set_page_config(page_title="DJ Mix Flow Analyzer", layout="wide")
@@ -308,17 +383,45 @@ with tabs[3]:
     else:
         _render_estimate_warning()
         selected = _select_result(results, "Visual flow mix")
-        st.plotly_chart(
-            make_flow_map(selected.feature_df, selected.events),
-            width="stretch",
-        )
-        st.plotly_chart(
-            make_pressure_silhouette(selected.feature_df, selected.events),
-            width="stretch",
-        )
-        st.plotly_chart(
-            make_layered_presence_map(selected.feature_df, selected.events),
-            width="stretch",
+        flow_fig = make_flow_map(selected.feature_df, selected.events)
+        silhouette_fig = make_pressure_silhouette(selected.feature_df, selected.events)
+        presence_fig = make_layered_presence_map(selected.feature_df, selected.events)
+        st.plotly_chart(flow_fig, width="stretch")
+        st.plotly_chart(silhouette_fig, width="stretch")
+        st.plotly_chart(presence_fig, width="stretch")
+
+        st.divider()
+        disp = Path(selected.name).stem
+        stem = _safe_stem(selected.name)
+        headline = selected.summary.get("headline", "")
+        _render_share_section(
+            [
+                {
+                    "label": "Flow map",
+                    "fig": flow_fig,
+                    "title": f"{disp} · Flow Map",
+                    "subtitle": headline,
+                    "lanes": 1,
+                    "stem": f"{stem}_flow",
+                },
+                {
+                    "label": "Pressure shape",
+                    "fig": silhouette_fig,
+                    "title": f"{disp} · Pressure Shape",
+                    "subtitle": headline,
+                    "lanes": 1,
+                    "stem": f"{stem}_silhouette",
+                },
+                {
+                    "label": "Presence map",
+                    "fig": presence_fig,
+                    "title": f"{disp} · Presence Map",
+                    "subtitle": headline,
+                    "lanes": 5,
+                    "stem": f"{stem}_presence",
+                },
+            ],
+            key_prefix=f"flow_{stem}",
         )
 
 with tabs[4]:
@@ -328,7 +431,19 @@ with tabs[4]:
         st.info("Analyze at least two mixes to compare their flow.")
     else:
         _render_estimate_warning()
-        st.plotly_chart(make_comparison_strips(results), width="stretch")
+        comparison_fig = make_comparison_strips(results)
+        st.plotly_chart(comparison_fig, width="stretch")
+
+        share_specs = [
+            {
+                "label": "Comparison strips",
+                "fig": comparison_fig,
+                "title": "Mix Comparison",
+                "subtitle": "Pressure flow, side by side",
+                "lanes": len(results),
+                "stem": "comparison_strips",
+            }
+        ]
 
         goal_mixes = [result for result in results if result.role == "goal"]
         aspiring_mixes = [result for result in results if result.role != "goal"]
@@ -349,6 +464,16 @@ with tabs[4]:
                         st.markdown("**Already matching**")
                         for line in advice["matched"]:
                             st.write(f"- {line}")
+                share_specs.append(
+                    {
+                        "label": f"Suggestions: {Path(aspiring.name).stem}",
+                        "fig": make_suggestion_card_figure(goal.name, aspiring.name, advice),
+                        "title": f"{Path(aspiring.name).stem} → Goal",
+                        "fit_plot": False,
+                        "keep_annotations": True,
+                        "stem": f"suggestions_{_safe_stem(aspiring.name)}",
+                    }
+                )
         else:
             st.info(
                 "Label exactly one mix as the goal-level mix on the Upload tab to unlock "
@@ -361,6 +486,9 @@ with tabs[4]:
         st.subheader("Mix Character Cards")
         for profile in build_comparison_profiles(results):
             _render_comparison_card(profile)
+
+        st.divider()
+        _render_share_section(share_specs, key_prefix="compare")
 
 with tabs[5]:
     st.subheader("Debug Data")
