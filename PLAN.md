@@ -61,7 +61,7 @@ Optional later libraries:
 ```txt
 demucs
 essentia
-madmom
+beat-this
 scikit-learn
 ```
 
@@ -71,7 +71,7 @@ the core `requirements.txt`. Keep them in a separate optional extras file
 without them (see [Phase 12](#phase-12-analysis-modes-and-optional-deep-dependency-scaffolding)):
 
 - `demucs` (+ `torch`) — vocal stem separation in Deep mode ([Phase 15](#phase-15-demucs-based-vocal-stem-analysis-deep-mode)).
-- `madmom` — accurate beat/downbeat tracking ([Phase 13](#phase-13-improved-local-tempo-and-downbeat-detection)), with a librosa PLP/beat fallback when it is absent.
+- `beat-this` (+ `torch`) — neural beat/downbeat tracking ([Phase 13](#phase-13-improved-local-tempo-and-downbeat-detection)), with a librosa PLP/beat fallback when it is absent. (Replaces `madmom`, which is unmaintained and incompatible with the numpy 2.x stack the core app depends on.)
 - `essentia`, `scikit-learn` — reserved for later experimentation.
 
 Notes:
@@ -138,7 +138,7 @@ Include controls for:
 - Minimum event spacing: default 30 seconds.
 - Analysis mode: `fast` (default) or `deep`. `fast` is the librosa-only pipeline
   that finishes in seconds; `deep` enables the heavier, optional analyses
-  (madmom downbeats, Demucs vocal stems) added in Phases 12–15 and is much slower.
+  (beat_this downbeats, Demucs vocal stems) added in Phases 12–15 and is much slower.
 
 ### Main app pages or sections
 
@@ -1098,7 +1098,7 @@ See [Visual 5](#visual-5-shareable-social-media-images) for the full spec.
 
 ### Phase 12: Analysis modes and optional "Deep" dependency scaffolding
 
-The next three phases add heavier, more accurate analyses (madmom downbeats,
+The next three phases add heavier, more accurate analyses (beat_this downbeats,
 per-segment key, Demucs vocal stems). Some conflict with the original POC
 non-goals (real-time, full source separation by default), so they are gated
 behind an opt-in **Deep** mode and kept out of the core install. This phase is
@@ -1110,7 +1110,10 @@ the foundation the others build on.
   - **Deep**: enables the optional analyses from Phases 13–15. Slower (minutes,
     plus a one-time model download for Demucs) and explicitly opt-in.
 - Keep the core `requirements.txt` light. Add an optional `requirements-deep.txt`
-  holding `torch`, `demucs`, and `madmom` with their version pins.
+  holding the torch-based extras (`beat-this`, `demucs`) with their version pins.
+  (`madmom` was the original choice but is unmaintained and fails to build/import
+  against the numpy 2.x the core app requires; `beat_this` is its torch-based
+  successor and reuses the PyTorch that Demucs already needs.)
 - **Lazy-import every heavy library** inside the function that uses it — never at
   module top level — so the base app imports and runs without them.
 - **Graceful degradation:** if a Deep feature's dependency is missing, show a
@@ -1119,9 +1122,9 @@ the foundation the others build on.
   Fast-mode result instead of crashing.
 - Thread `analysis_mode` through `_analyze_uploaded_bytes(...)` into the feature,
   rhythm, key, and vocal functions.
-- Add a small capability module `src/deep.py` with `has_demucs()` / `has_madmom()`
-  probes so the UI can advertise what is available and label Deep features
-  accordingly.
+- Add a small capability module `src/deep.py` with `has_demucs()` /
+  `has_beat_this()` probes so the UI can advertise what is available and label
+  Deep features accordingly.
 - Extend the existing `st.cache_data` keying to include `analysis_mode` (and the
   file hash) so toggling modes never silently reuses a result from the other mode.
   Deep results are expensive — cache them aggressively.
@@ -1137,10 +1140,12 @@ Today a single global tempo is computed and broadcast to every window as
 `local_tempo`, and the UI hardcodes the tag `tempo appears mostly stable`. Replace
 this with a real local-tempo curve plus a beat/downbeat grid.
 
-- **Primary engine: madmom.** Use `RNNDownBeatProcessor` +
-  `DBNDownBeatTrackingProcessor` for accurate beats and downbeats. madmom is an
-  optional `deep` extra (Phase 12) and is lazy-imported.
-- **Fallback (always available — Fast mode, or when madmom is not installed):**
+- **Primary engine: beat_this.** Use the `beat_this` neural beat/downbeat tracker
+  (CPJKU's torch-based successor to madmom) for accurate beats and downbeats. It
+  is an optional `deep` extra (Phase 12), runs on PyTorch (shared with Demucs),
+  and is lazy-imported. (madmom was the original pick but is unmaintained and
+  incompatible with the numpy 2.x stack the core app requires.)
+- **Fallback (always available — Fast mode, or when beat_this is not installed):**
   `librosa.beat.plp` for a predominant-local-pulse tempo curve plus
   `librosa.beat.beat_track` for a beat grid; approximate downbeats by grouping
   beats into bars assuming 4/4 for the POC.
@@ -1152,10 +1157,10 @@ this with a real local-tempo curve plus a beat/downbeat grid.
 - Suggested function:
 
 ```python
-def estimate_rhythm(y, sr, *, use_madmom: bool) -> "RhythmResult":
+def estimate_rhythm(y, sr, *, use_beat_this: bool) -> "RhythmResult":
     """Return beats, downbeats, a local-tempo curve, and a tempo-stability
-    summary. Uses madmom's DBN tracker when available/selected, otherwise
-    librosa PLP + beat_track."""
+    summary. Uses the beat_this neural tracker when available/selected,
+    otherwise librosa PLP + beat_track."""
 ```
 
 - Surface in the UI:

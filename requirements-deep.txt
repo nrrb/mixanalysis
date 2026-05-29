@@ -1,0 +1,24 @@
+# Optional "Deep" analysis extras for the DJ Mix Flow Analyzer.
+#
+# These power the opt-in Deep analysis mode (Phases 13-15): beat_this for
+# accurate beat/downbeat tracking and Demucs for vocal-stem separation. Both run
+# on PyTorch. They are intentionally kept OUT of the core requirements.txt
+# because they are large and slow to install; the base app runs without them and
+# Deep features fall back to their Fast-mode equivalents when a library is
+# missing.
+#
+# Install the core requirements first, then:
+#   pip install -r requirements-deep.txt
+#
+# Note: this pulls in PyTorch (~GBs), and both beat_this and Demucs download a
+# model on first use.
+#
+# (beat_this replaces madmom, which is unmaintained and incompatible with the
+# numpy 2.x stack the core app depends on.)
+
+# Beat / downbeat tracking (Phase 13). PyPI name "beat-this", imported as
+# "beat_this"; pulls in torch/torchaudio.
+beat-this>=1.1.0
+
+# Vocal-stem separation (Phase 15); demucs also runs on torch/torchaudio.
+demucs>=4.0.0

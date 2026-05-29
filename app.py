@@ -6,6 +6,7 @@ import streamlit as st
 
 from src.audio_io import load_audio, save_uploaded_bytes
 from src.compare import build_comparison_profiles, suggest_toward_goal, summarize_comparison
+from src.deep import probe_capabilities, resolve_analysis_mode
 from src.events import MixEvent, detect_events
 from src.features import analyze_audio_windows
 from src.summaries import assign_pressure_labels, summarize_mix
@@ -33,7 +34,13 @@ def _analyze_uploaded_bytes(
     hop_seconds: float,
     sensitivity: str,
     minimum_spacing_seconds: float,
+    analysis_mode: str,
 ) -> MixAnalysisResult:
+    # analysis_mode is part of the cache key so toggling Fast/Deep never reuses a
+    # result from the other mode. The Deep-specific analyses (beat_this downbeats,
+    # Demucs vocals, key timeline) are wired into this pipeline by Phases 13-15;
+    # for now both modes share the librosa-only path and the mode is recorded on
+    # the result for downstream use.
     cache_dir = Path("outputs/cache")
     path = save_uploaded_bytes(file_name, file_bytes, cache_dir)
     y, sr = load_audio(path)
@@ -64,6 +71,7 @@ def _analyze_uploaded_bytes(
         feature_df=feature_df,
         events=events,
         summary=summary,
+        analysis_mode=analysis_mode,
     )
 
 
@@ -247,14 +255,36 @@ with st.sidebar:
     )
     analysis_mode = st.selectbox(
         "Analysis mode",
-        ["fast"],
+        ["fast", "deep"],
         index=0,
+        format_func=lambda mode: {
+            "fast": "Fast (seconds)",
+            "deep": "Deep (slower, optional)",
+        }[mode],
         help=(
-            "Fast mode uses a lighter feature set for quick results. "
-            "Future modes (Detailed, Deep) will add source separation "
-            "and more precise tempo tracking."
+            "Fast — librosa-only pipeline that finishes in seconds (default).\n\n"
+            "Deep — adds the optional, heavier analyses (beat_this beat/downbeat "
+            "tracking and Demucs vocal stems). Much slower, and needs the "
+            "optional `deep` extras (`pip install -r requirements-deep.txt`). "
+            "Any missing engine falls back to its Fast-mode equivalent."
         ),
     )
+    if analysis_mode == "deep":
+        caps = probe_capabilities()
+        if caps.all_available:
+            st.caption("Deep extras detected: beat_this + Demucs.")
+        elif caps.any_available:
+            installed = ", ".join(
+                name
+                for name, ok in (("beat_this", caps.beat_this), ("Demucs", caps.demucs))
+                if ok
+            )
+            st.caption(f"Partial Deep extras: {installed}. Missing parts use Fast fallbacks.")
+        else:
+            st.caption(
+                "No Deep extras installed — Deep mode will run as Fast. "
+                "Install `requirements-deep.txt` to enable it."
+            )
     analyze_clicked = st.button("Analyze mixes", type="primary")
 
 tabs = st.tabs(
@@ -299,6 +329,10 @@ with tabs[0]:
         st.info("Upload at least one mix to begin.")
 
     if uploaded_files and analyze_clicked:
+        resolved_mode = resolve_analysis_mode(analysis_mode)
+        for message in resolved_mode.messages:
+            st.warning(message)
+
         results: list[MixAnalysisResult] = []
 
         for uploaded_file in uploaded_files:
@@ -313,6 +347,7 @@ with tabs[0]:
                         float(hop_seconds),
                         sensitivity,
                         float(minimum_event_spacing),
+                        resolved_mode.effective,
                     )
                     result.role = (
                         "goal" if roles.get(uploaded_file.name) == "goal-level mix" else "aspiring"
@@ -331,7 +366,8 @@ with tabs[0]:
             role_label = "goal-level mix" if result.role == "goal" else "aspiring mix"
             st.write(
                 f"**{result.name}** ({role_label}) - {format_duration(result.duration)} "
-                f"at {result.sample_rate:,} Hz - {len(result.feature_df)} analysis windows"
+                f"at {result.sample_rate:,} Hz - {len(result.feature_df)} analysis windows "
+                f"- {result.analysis_mode} mode"
             )
 
 with tabs[1]:

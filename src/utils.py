@@ -14,6 +14,7 @@ class MixAnalysisResult:
     events: list[MixEvent]
     summary: dict
     role: str = "aspiring"  # "goal" or "aspiring"
+    analysis_mode: str = "fast"  # "fast" or "deep" (see Phase 12)
 
 
 def format_duration(seconds: float) -> str:
