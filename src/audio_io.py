@@ -24,7 +24,20 @@ def save_uploaded_bytes(file_name: str, data: bytes, cache_dir: Path) -> Path:
     return path
 
 
-def load_audio(path: Path, sr: int = 22050, mono: bool = True) -> tuple[np.ndarray, int]:
-    """Load audio using librosa and return waveform and sample rate."""
-    y, loaded_sr = librosa.load(path, sr=sr, mono=mono)
+def load_audio(
+    path: Path,
+    sr: int = 22050,
+    mono: bool = True,
+    res_type: str = "soxr_lq",
+) -> tuple[np.ndarray, int]:
+    """Load audio using librosa and return waveform and sample rate.
+
+    Decoding/resampling is the single largest cost per file on a long mix. The
+    default target sr=22050 from 44.1kHz sources is an exact 2:1 ratio that the
+    "soxr_lq" resampler handles much faster than the librosa default "soxr_hq",
+    with no meaningful effect on the coarse features we extract. Keep sr at a
+    clean divisor of 44100 (e.g. 22050) — sr=16000 is both slower to resample and
+    shifts features. See OPTIMIZATIONS.md.
+    """
+    y, loaded_sr = librosa.load(path, sr=sr, mono=mono, res_type=res_type)
     return y, int(loaded_sr)
