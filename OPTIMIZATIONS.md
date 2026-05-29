@@ -170,7 +170,7 @@ Mirrors the in-session task list. Update as work lands.
 | 4 | Coarsen `hop_length` (512 → 1024)              | 1  | ✅ Done (2026-05-28) |
 | 5 | Reuse onset envelope for tempo                  | 1  | ✅ Done (2026-05-28) |
 | 6 | Faster decode/resample (`soxr_lq` @ 22050)     | 2  | ✅ Done (2026-05-28) |
-| 7 | Parallelize across files / chunks (processes)  | 3  | ⬜ Pending |
+| 7 | Parallelize across files / chunks (processes)  | 3  | ❌ Rejected (2026-05-28, measured slower) |
 | 8 | Vectorize per-window aggregation (searchsorted)| 1  | ✅ Done (2026-05-28) |
 | 9 | Pin `chroma_stft(tuning=0.0)`                   | 1  | ✅ Done (2026-05-28) |
 
@@ -218,6 +218,23 @@ detection is upgraded (Demucs, per PLAN.md future work).
   2617→1956, bass 0.229→0.255). Kept sr=22050 (exact 2:1 from 44.1kHz).
 - **Native sr / no resample.** Decode is fast (2.2s) but yields 2× the samples
   (101M @ 44.1kHz), making every downstream feature ~2× slower. Rejected.
+- **Parallelism — threads and processes both rejected (task #7).** Measured on a
+  simulated 3-file batch (3× the real mix):
+  - `ThreadPoolExecutor` x3: **0.74×** (slower than sequential).
+  - `ProcessPoolExecutor` x2/x3: **0.45× / 0.32×** (much slower).
+
+  Two compounding causes: (1) after Tier 1 the pipeline is **memory-bandwidth
+  bound** (large `|STFT|`/`power` arrays), so concurrent analyses contend for
+  bandwidth rather than scaling; (2) NumPy/SciPy on macOS already parallelize
+  internally via the **Accelerate** framework, so a single analysis already uses
+  multiple cores — app-level parallelism **oversubscribes** them and thrashes.
+  Processes additionally pay `spawn` worker startup + a fresh librosa import
+  (~5s) per worker, which dwarfs the now-small ~3s/file compute, and `spawn`
+  would re-execute the Streamlit script in every worker (a real integration
+  hazard). Conclusion: do **not** add app-level parallelism for this workload.
+  Reconsider only if the per-file compute grows large again (e.g. Demucs source
+  separation) — and if so, pin BLAS threads (`OMP_NUM_THREADS=1` /
+  `VECLIB_MAXIMUM_THREADS=1`) in the workers to avoid oversubscription.
 
 ## Gotchas worth remembering
 
@@ -245,9 +262,6 @@ detection is upgraded (Demucs, per PLAN.md future work).
 
 ## Open questions / not yet measured
 
-- **Tier 3 parallelism (task #7).** Not yet implemented. With single-file
-  analysis now ~6s end-to-end, per-file `ProcessPoolExecutor` in `app.py` only
-  matters for multi-file batches. Measure batch wall-clock before investing.
 - **Streamlit overhead.** End-to-end numbers here are the analysis pipeline only;
   the `@st.cache_data` path and UI rendering weren't separately profiled (they
   were never suspected as hot).
@@ -309,3 +323,14 @@ git-stash before/after.
   `n_fft=4096` and onset-reuse (see "Approaches tried and rejected").
 - Remaining: task #7 (parallelism) — deferred; single-file is now fast enough
   that it only helps multi-file batches.
+
+### 2026-05-28 — Parallelism investigated and rejected (task #7)
+- Benchmarked a simulated 3-file batch. Threads x3 = 0.74×; processes x2/x3 =
+  0.45×/0.32× — all **slower** than sequential.
+- Root cause: pipeline is now memory-bandwidth bound and NumPy/SciPy already use
+  multiple cores via macOS Accelerate, so app-level parallelism oversubscribes
+  cores; processes also pay spawn + per-worker librosa import (~5s) and would
+  re-run the Streamlit script per worker. See "Approaches tried and rejected".
+- Decision: leave `app.py` sequential. No code change. Status: rejected.
+- This closes the originally-planned optimization tasks. Pipeline stands at
+  ~7× end-to-end / ~12× analysis on the real file.
