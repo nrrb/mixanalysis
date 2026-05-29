@@ -13,6 +13,7 @@ class MixAnalysisResult:
     feature_df: pd.DataFrame
     events: list[MixEvent]
     summary: dict
+    role: str = "aspiring"  # "goal" or "aspiring"
 
 
 def format_duration(seconds: float) -> str:

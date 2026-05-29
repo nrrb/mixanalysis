@@ -3,7 +3,7 @@ from pathlib import Path
 import streamlit as st
 
 from src.audio_io import load_audio, save_uploaded_bytes
-from src.compare import build_comparison_profiles, summarize_comparison
+from src.compare import build_comparison_profiles, suggest_toward_goal, summarize_comparison
 from src.events import MixEvent, detect_events
 from src.features import analyze_audio_windows
 from src.summaries import assign_pressure_labels, summarize_mix
@@ -193,13 +193,33 @@ with tabs[0]:
         accept_multiple_files=True,
     )
 
+    roles: dict[str, str] = {}
     if uploaded_files:
         st.write(f"{len(uploaded_files)} file(s) ready for analysis.")
+        st.markdown("**Label each mix**")
         for uploaded_file in uploaded_files:
             if _is_supported_file(uploaded_file.name):
-                st.write(f"- {uploaded_file.name}")
+                roles[uploaded_file.name] = st.radio(
+                    uploaded_file.name,
+                    ["aspiring mix", "goal-level mix"],
+                    index=0,
+                    horizontal=True,
+                    key=f"role_{uploaded_file.name}",
+                    help=(
+                        "Mark the reference mix you want to sound more like as the "
+                        "goal-level mix, and your own mixes as aspiring. With one goal "
+                        "mix labeled, the Compare Mixes tab suggests how to close the gap."
+                    ),
+                )
             else:
                 st.error(f"{uploaded_file.name} is not a supported audio type.")
+
+        goal_count = sum(1 for role in roles.values() if role == "goal-level mix")
+        if goal_count != 1:
+            st.warning(
+                "Pick exactly one goal-level mix to unlock tailored suggestions. "
+                "You can still analyze without one."
+            )
     else:
         st.info("Upload at least one mix to begin.")
 
@@ -219,6 +239,9 @@ with tabs[0]:
                         sensitivity,
                         float(minimum_event_spacing),
                     )
+                    result.role = (
+                        "goal" if roles.get(uploaded_file.name) == "goal-level mix" else "aspiring"
+                    )
                     results.append(result)
                 except Exception as exc:
                     st.error(f"Could not analyze {uploaded_file.name}: {exc}")
@@ -230,8 +253,9 @@ with tabs[0]:
     if "results" in st.session_state:
         st.subheader("Analyzed Mixes")
         for result in st.session_state["results"]:
+            role_label = "goal-level mix" if result.role == "goal" else "aspiring mix"
             st.write(
-                f"**{result.name}** - {format_duration(result.duration)} "
+                f"**{result.name}** ({role_label}) - {format_duration(result.duration)} "
                 f"at {result.sample_rate:,} Hz - {len(result.feature_df)} analysis windows"
             )
 
@@ -305,6 +329,33 @@ with tabs[4]:
     else:
         _render_estimate_warning()
         st.plotly_chart(make_comparison_strips(results), width="stretch")
+
+        goal_mixes = [result for result in results if result.role == "goal"]
+        aspiring_mixes = [result for result in results if result.role != "goal"]
+        if len(goal_mixes) == 1 and aspiring_mixes:
+            goal = goal_mixes[0]
+            st.subheader("Suggestions Toward the Goal")
+            st.markdown(f"Goal mix: **{goal.name}**")
+            for aspiring in aspiring_mixes:
+                advice = suggest_toward_goal(goal, aspiring)
+                with st.container(border=True):
+                    st.markdown(f"### {aspiring.name}")
+                    st.markdown(f"**{advice['headline']}**")
+                    if advice["suggestions"]:
+                        st.markdown("**Suggestions**")
+                        for line in advice["suggestions"]:
+                            st.write(f"- {line}")
+                    if advice["matched"]:
+                        st.markdown("**Already matching**")
+                        for line in advice["matched"]:
+                            st.write(f"- {line}")
+        else:
+            st.info(
+                "Label exactly one mix as the goal-level mix on the Upload tab to unlock "
+                "tailored suggestions for your aspiring mixes."
+            )
+
+        st.subheader("Side-by-Side Comparison")
         for line in _comparison_summary(results):
             st.write(line)
         st.subheader("Mix Character Cards")
