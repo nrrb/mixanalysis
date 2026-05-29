@@ -2,3 +2,4 @@ __pycache__
 venv
 outputs/cache/
 .DS_Store
+sample_data
