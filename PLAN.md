@@ -65,6 +65,15 @@ madmom
 scikit-learn
 ```
 
+These optional libraries now back specific planned phases and are **not** part of
+the core `requirements.txt`. Keep them in a separate optional extras file
+(`requirements-deep.txt`) and lazy-import them so the base POC installs and runs
+without them (see [Phase 12](#phase-12-analysis-modes-and-optional-deep-dependency-scaffolding)):
+
+- `demucs` (+ `torch`) — vocal stem separation in Deep mode ([Phase 15](#phase-15-demucs-based-vocal-stem-analysis-deep-mode)).
+- `madmom` — accurate beat/downbeat tracking ([Phase 13](#phase-13-improved-local-tempo-and-downbeat-detection)), with a librosa PLP/beat fallback when it is absent.
+- `essentia`, `scikit-learn` — reserved for later experimentation.
+
 Notes:
 
 - Use `librosa` for MP3 loading, beat tracking, onset strength, RMS, spectral features, chroma, and time conversion.
@@ -127,7 +136,9 @@ Include controls for:
 - Hop size in seconds: default 5.
 - Sensitivity: `conservative`, `balanced`, `sensitive`.
 - Minimum event spacing: default 30 seconds.
-- Analysis mode: `fast` only for POC.
+- Analysis mode: `fast` (default) or `deep`. `fast` is the librosa-only pipeline
+  that finishes in seconds; `deep` enables the heavier, optional analyses
+  (madmom downbeats, Demucs vocal stems) added in Phases 12–15 and is much slower.
 
 ### Main app pages or sections
 
@@ -678,7 +689,14 @@ class MixAnalysisResult:
     events: list[MixEvent]
     summary: dict
     role: str = "aspiring"  # "goal" or "aspiring"
+    analysis_mode: str = "fast"  # "fast" or "deep" (see Phase 12)
+    rhythm: "RhythmResult | None" = None  # beats/downbeats/tempo curve (Phase 13)
+    key_timeline: list["KeySegment"] = field(default_factory=list)  # Phase 14
+    vocal_source: str = "proxy"  # "proxy" or "demucs" (Phase 15)
 ```
+
+> The fields below `role` are added incrementally by Phases 12–15 and all have
+> safe defaults, so earlier phases and Fast-mode runs leave them untouched.
 
 ## Streamlit app layout
 
@@ -1078,6 +1096,186 @@ See [Visual 5](#visual-5-shareable-social-media-images) for the full spec.
 - Keep the no-raw-numbers rule: shared images use labels, colored blocks, markers,
   and short captions only.
 
+### Phase 12: Analysis modes and optional "Deep" dependency scaffolding
+
+The next three phases add heavier, more accurate analyses (madmom downbeats,
+per-segment key, Demucs vocal stems). Some conflict with the original POC
+non-goals (real-time, full source separation by default), so they are gated
+behind an opt-in **Deep** mode and kept out of the core install. This phase is
+the foundation the others build on.
+
+- Promote the sidebar `analysis_mode` control from "fast only" to a real choice:
+  - **Fast** (default): today's librosa-only pipeline, unchanged, finishes in
+    seconds.
+  - **Deep**: enables the optional analyses from Phases 13–15. Slower (minutes,
+    plus a one-time model download for Demucs) and explicitly opt-in.
+- Keep the core `requirements.txt` light. Add an optional `requirements-deep.txt`
+  holding `torch`, `demucs`, and `madmom` with their version pins.
+- **Lazy-import every heavy library** inside the function that uses it — never at
+  module top level — so the base app imports and runs without them.
+- **Graceful degradation:** if a Deep feature's dependency is missing, show a
+  clear `st.info`/`st.warning` (e.g. "Deep vocal separation needs the optional
+  `deep` extras; falling back to the heuristic vocal proxy") and continue with the
+  Fast-mode result instead of crashing.
+- Thread `analysis_mode` through `_analyze_uploaded_bytes(...)` into the feature,
+  rhythm, key, and vocal functions.
+- Add a small capability module `src/deep.py` with `has_demucs()` / `has_madmom()`
+  probes so the UI can advertise what is available and label Deep features
+  accordingly.
+- Extend the existing `st.cache_data` keying to include `analysis_mode` (and the
+  file hash) so toggling modes never silently reuses a result from the other mode.
+  Deep results are expensive — cache them aggressively.
+- Use cautious copy: Deep mode is slower and its outputs are still estimates.
+
+Acceptance: Fast mode behaves exactly as it does today; Deep mode runs end-to-end
+when the extras are installed and degrades to a Fast-equivalent result with a
+friendly message when they are not.
+
+### Phase 13: Improved local tempo and downbeat detection
+
+Today a single global tempo is computed and broadcast to every window as
+`local_tempo`, and the UI hardcodes the tag `tempo appears mostly stable`. Replace
+this with a real local-tempo curve plus a beat/downbeat grid.
+
+- **Primary engine: madmom.** Use `RNNDownBeatProcessor` +
+  `DBNDownBeatTrackingProcessor` for accurate beats and downbeats. madmom is an
+  optional `deep` extra (Phase 12) and is lazy-imported.
+- **Fallback (always available — Fast mode, or when madmom is not installed):**
+  `librosa.beat.plp` for a predominant-local-pulse tempo curve plus
+  `librosa.beat.beat_track` for a beat grid; approximate downbeats by grouping
+  beats into bars assuming 4/4 for the POC.
+- New result data (suggest a `RhythmResult` dataclass on a new `src/rhythm.py`):
+  - `tempo_curve`: local BPM over time. The per-window `local_tempo` becomes the
+    windowed mean of this curve instead of a single broadcast value.
+  - `beats`, `downbeats`: arrays of times. Note the assumed meter.
+  - `tempo_stability`: a variability summary used to drive the tempo tag.
+- Suggested function:
+
+```python
+def estimate_rhythm(y, sr, *, use_madmom: bool) -> "RhythmResult":
+    """Return beats, downbeats, a local-tempo curve, and a tempo-stability
+    summary. Uses madmom's DBN tracker when available/selected, otherwise
+    librosa PLP + beat_track."""
+```
+
+- Surface in the UI:
+  - Replace the hardcoded `tempo appears mostly stable` tag in `summaries.py` with
+    one driven by `tempo_stability`, e.g. `steady tempo (~124 BPM)`,
+    `tempo drifts`, or `tempo steps between tracks`. Keep cautious language
+    (`appears ~124 BPM`).
+  - Optional beat/downbeat tick overlay on the flow map and silhouette, behind a
+    toggle so it does not clutter the default view.
+  - New event candidate: `tempo change candidate` where local tempo shifts
+    notably — often a track change, so it corroborates `likely transition`
+    detection.
+- Reuse `format_time` / `make_time_ticks` for any beat-time displays. Keep raw BPM
+  out of headlines and chart axes; show it as a tag/caption only.
+
+### Phase 14: Per-segment key detection with confidence and Camelot labels
+
+Add a **key timeline**, not a single whole-mix key — DJ sets modulate across the
+tracks in the set, so one key for the whole mix is usually wrong.
+
+- Reuse the chroma already computed per window in `features.py` (no new transform
+  in Fast mode). Aggregate chroma over short segments and match against the 24
+  major/minor key profiles.
+- **Method:** Krumhansl–Schmuckler (or Temperley) key-profile correlation against
+  the 24 templates. The best-correlating template is the estimate; the margin
+  between the top and second candidate gives a confidence.
+- **Granularity:** per-segment. Segment either by fixed blocks (~20–30 s, coarser
+  than feature windows for stability) or align to transition-bounded regions from
+  event detection when available. Merge adjacent same-key segments into key
+  regions.
+- **Confidence:** map correlation strength / top-vs-second margin to
+  `low`/`medium`/`high`. Below a threshold, label `tonal center unclear` rather
+  than guessing (consistent with the existing key guidance).
+- **Camelot labels:** map each key to its Camelot wheel code (e.g. A minor → `8A`,
+  C major → `8B`). Define the mapping once (12 major + 12 minor → `1A`..`12B`) in
+  `src/keys.py`.
+- **Harmonic-movement events:** when the key changes between adjacent regions, emit
+  a `key change candidate` and classify the move by Camelot adjacency:
+  - ±1 on the wheel, or a relative major/minor swap → `smooth harmonic key move`
+    (energy-preserving).
+  - a non-adjacent jump → `bold key change`.
+  This is real harmonic-mixing feedback and feeds the compare/suggestions.
+- Suggested API (`src/keys.py`):
+
+```python
+@dataclass
+class KeySegment:
+    start: float
+    end: float
+    key: str | None        # e.g. "A minor", or None when unclear
+    camelot: str | None     # e.g. "8A"
+    confidence: str         # low / medium / high / "unclear"
+
+
+def detect_key_timeline(df, *, segment_seconds: float = 25.0) -> list[KeySegment]:
+    """Return per-segment key estimates with confidence and Camelot labels."""
+
+
+def camelot_code(key_name: str, mode: str) -> str:
+    """Map a key name + mode to its Camelot wheel code."""
+```
+
+- Data model: populate `key_timeline` on `MixAnalysisResult`.
+- UI:
+  - A **Harmonic / key** lane on the layered presence map (Visual 3), colored by
+    Camelot, leaving `tonal center unclear` stretches muted.
+  - Key-change events in the Key Moments tab with Camelot + plain English
+    ("Moves from 8A to 9A — a smooth, energy-lifting harmonic step").
+  - In Compare: a harmonic-mixing character note (mostly-smooth vs jumpy moves)
+    and a goal-vs-aspiring suggestion (e.g. "the goal stays within neighboring
+    Camelot keys; yours jumps around — try sequencing tracks one step apart on the
+    wheel").
+  - Keep the existing disclaimer — never present keys as authoritative; show
+    Camelot + name as study cues.
+- Works in Fast mode (chroma-only, cheap). In Deep mode, key detection can
+  optionally re-run on the Demucs accompaniment/harmonic stem (Phase 15) for a
+  cleaner estimate — mark as a stretch.
+
+### Phase 15: Demucs-based vocal stem analysis (Deep mode)
+
+Replace the weak heuristic vocal proxy with **measured** vocal-stem energy when the
+user opts into Deep mode.
+
+- Run Demucs once on the full mix to separate a vocals stem (`htdemucs`); use the
+  two-stem path (`--two-stems=vocals` / vocals + accompaniment) to roughly halve
+  the cost. Lazy-import; `torch`/`demucs` are `deep` extras (Phase 12), and the
+  GPU is used when available.
+- **Performance/UX:** this is the slow path (minutes; a large model download on
+  first run). Gate it strictly behind Deep mode, show a prominent spinner/progress
+  and a one-time "first run downloads the separation model" notice, and cache the
+  separated stem + its features keyed by file hash so re-analysis is instant.
+- From the vocals stem, compute a real per-window **vocal-activity** signal: stem
+  RMS / vocal-to-mix energy ratio, smoothed, with a hysteresis threshold to mark
+  vocal-present windows. This replaces the proxy when Demucs ran.
+- **Provenance:** set `vocal_source = "demucs" | "proxy"` on the result so the UI
+  can upgrade language: a measured `vocal section` vs the cautious
+  `possible vocal section` from the proxy. Even with stems, avoid over-claiming
+  (no lyric/word-level claims).
+- **Integration:** make the downstream consumers source-agnostic — they read one
+  `possible_vocal` / `vocal_activity` column regardless of how it was produced. So
+  `_detect_possible_vocals` can emit higher-confidence `vocal section` events, and
+  `vocal_share` in `summaries.py` / `compare.py` uses measured values, with no
+  per-call branching on the source.
+- Suggested API (`src/vocals.py`):
+
+```python
+def separate_vocals(y, sr) -> np.ndarray:
+    """Lazy-import Demucs and return the isolated vocal stem."""
+
+
+def vocal_activity(vocal_stem, mix, sr, *, hop_seconds: float) -> "pd.Series":
+    """Per-window vocal-presence signal from the stem-vs-mix energy ratio."""
+```
+
+- Optionally reuse the accompaniment stem to sharpen `bass_pressure` and the
+  Phase 14 key estimate (cleaner harmony with vocals removed) — mark as a stretch.
+- UI: a Deep-mode badge on measured vocal events; if Demucs is unavailable, fall
+  back to the proxy with the Phase 12 message. Lanes and shareable images use the
+  measured vocal regions when present.
+
 ## Important implementation details
 
 ### Time formatting
@@ -1149,9 +1347,9 @@ Numbers can exist in `Debug Data` only.
 
 After the proof of concept works, consider adding:
 
-- Demucs-based vocal stem analysis.
-- Better local tempo and downbeat detection.
-- Key detection with confidence and Camelot labels.
+- ~~Demucs-based vocal stem analysis.~~ Now planned — see [Phase 15](#phase-15-demucs-based-vocal-stem-analysis-deep-mode).
+- ~~Better local tempo and downbeat detection.~~ Now planned — see [Phase 13](#phase-13-improved-local-tempo-and-downbeat-detection).
+- ~~Key detection with confidence and Camelot labels.~~ Now planned — see [Phase 14](#phase-14-per-segment-key-detection-with-confidence-and-camelot-labels).
 - Exportable HTML reports.
 - Animated/video versions of the shareable social images (e.g. an MP4 story that
   scrubs through the timeline). The static square and 9:16 PNG export is now part
