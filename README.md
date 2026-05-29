@@ -25,9 +25,14 @@ Implemented:
 - Event detection for drops, relief, buildups, possible vocals, transitions, and sustained pressure.
 - Plotly flow maps, pressure silhouettes, and layered presence maps.
 - Multi-mix comparison strips and comparison summaries.
+- Mix character cards for comparing pressure timing, relief, possible vocals, transitions, and sustained pressure.
+- Cached analysis for repeated runs with the same file and settings.
+- Basic unsupported-file and empty-audio error handling.
+- Clear warnings that analysis labels are estimates.
 - Debug data tab for inspecting extracted features.
 
-Not implemented yet:
+Still intentionally limited:
 
-- Phase 6 refinements beyond the initial comparison view.
-- Polish items such as caching, screenshots, and broader error handling.
+- Event labels are rule-based estimates, not authoritative music metadata.
+- Possible-vocal detection uses a weak full-mix proxy rather than source separation.
+- Future screenshots and export features are not included in this local POC.

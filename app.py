@@ -2,7 +2,8 @@ from pathlib import Path
 
 import streamlit as st
 
-from src.audio_io import load_audio, save_uploaded_file
+from src.audio_io import load_audio, save_uploaded_bytes
+from src.compare import build_comparison_profiles, summarize_comparison
 from src.events import MixEvent, detect_events
 from src.features import analyze_audio_windows
 from src.summaries import assign_pressure_labels, summarize_mix
@@ -13,6 +14,51 @@ from src.visuals import (
     make_layered_presence_map,
     make_pressure_silhouette,
 )
+
+
+SUPPORTED_EXTENSIONS = {".mp3", ".wav", ".m4a"}
+
+
+@st.cache_data(show_spinner=False)
+def _analyze_uploaded_bytes(
+    file_name: str,
+    file_bytes: bytes,
+    window_seconds: float,
+    hop_seconds: float,
+    sensitivity: str,
+    minimum_spacing_seconds: float,
+) -> MixAnalysisResult:
+    cache_dir = Path("outputs/cache")
+    path = save_uploaded_bytes(file_name, file_bytes, cache_dir)
+    y, sr = load_audio(path)
+    if y.size == 0:
+        raise ValueError("The decoded audio was empty.")
+
+    feature_df = analyze_audio_windows(
+        y,
+        sr,
+        window_seconds=window_seconds,
+        hop_seconds=hop_seconds,
+    )
+    if feature_df.empty:
+        raise ValueError("The audio did not produce any analysis windows.")
+
+    feature_df = assign_pressure_labels(feature_df)
+    events = detect_events(
+        feature_df,
+        sensitivity=sensitivity,
+        minimum_spacing_seconds=minimum_spacing_seconds,
+    )
+    duration = len(y) / sr if sr else 0.0
+    summary = summarize_mix(feature_df, events, duration=duration)
+    return MixAnalysisResult(
+        name=file_name,
+        duration=duration,
+        sample_rate=sr,
+        feature_df=feature_df,
+        events=events,
+        summary=summary,
+    )
 
 
 def _select_result(results: list[MixAnalysisResult], label: str) -> MixAnalysisResult:
@@ -30,45 +76,41 @@ def _render_event_card(event: MixEvent) -> None:
 
 
 def _comparison_summary(results: list[MixAnalysisResult]) -> list[str]:
-    rows = []
-    for result in results:
-        df = result.feature_df
-        high_share = float((df["pressure_score"] >= 0.62).mean()) if not df.empty else 0.0
-        relief_share = float((df["relief_type"] != "no clear relief").mean()) if not df.empty else 0.0
-        vocal_share = float(df["possible_vocal"].mean()) if not df.empty else 0.0
-        first_full = df.loc[df["pressure_score"] >= 0.62, "start_time"]
-        rows.append(
-            {
-                "name": result.name,
-                "high_share": high_share,
-                "relief_share": relief_share,
-                "vocal_share": vocal_share,
-                "first_full": float(first_full.iloc[0]) if not first_full.empty else None,
-                "tags": ", ".join(result.summary.get("tags", [])),
-            }
-        )
+    return summarize_comparison(results)
 
-    earliest = min(
-        (row for row in rows if row["first_full"] is not None),
-        key=lambda row: row["first_full"],
-        default=None,
-    )
-    most_relief = max(rows, key=lambda row: row["relief_share"])
-    most_pressure = max(rows, key=lambda row: row["high_share"])
-    most_vocal = max(rows, key=lambda row: row["vocal_share"])
 
-    lines = []
-    if earliest:
-        lines.append(
-            f"{earliest['name']} reaches full pressure earliest, around {format_duration(earliest['first_full'])}."
-        )
-    lines.append(
-        f"{most_pressure['name']} spends the largest share of time in full or peak pressure."
+def _is_supported_file(file_name: str) -> bool:
+    return Path(file_name).suffix.lower() in SUPPORTED_EXTENSIONS
+
+
+def _render_estimate_warning() -> None:
+    st.warning(
+        "These labels are estimates from audio features. Treat drops, vocals, transitions, and keys as study cues, not facts.",
     )
-    lines.append(f"{most_relief['name']} has the most frequent relief pockets.")
-    if most_vocal["vocal_share"] > 0:
-        lines.append(f"{most_vocal['name']} has the strongest possible-vocal signal.")
-    return lines
+
+
+def _render_comparison_card(profile) -> None:
+    first_full = (
+        format_duration(profile.first_full_pressure)
+        if profile.first_full_pressure is not None
+        else "not detected"
+    )
+    with st.container(border=True):
+        st.markdown(f"### {profile.name}")
+        st.markdown(f"**{profile.character}**")
+        st.caption(profile.shape_tag)
+        cols = st.columns(3)
+        cols[0].metric("First full pressure", first_full)
+        cols[1].metric("High pressure", _percent(profile.high_pressure_share))
+        cols[2].metric("Relief", _percent(profile.relief_share))
+        cols = st.columns(3)
+        cols[0].metric("Possible vocals", _percent(profile.possible_vocal_share))
+        cols[1].metric("Transitions", str(profile.transition_count))
+        cols[2].metric("Longest pressure run", format_duration(profile.longest_high_pressure_run))
+
+
+def _percent(value: float) -> str:
+    return f"{round(value * 100):.0f}%"
 
 
 st.set_page_config(page_title="DJ Mix Flow Analyzer", layout="wide")
@@ -77,6 +119,7 @@ st.title("DJ Mix Flow Analyzer")
 st.caption(
     "Upload DJ mixes and study their pressure, relief, drops, vocals, and pacing as visual flow maps."
 )
+_render_estimate_warning()
 
 with st.sidebar:
     st.header("Analysis Controls")
@@ -105,43 +148,30 @@ with tabs[0]:
     if uploaded_files:
         st.write(f"{len(uploaded_files)} file(s) ready for analysis.")
         for uploaded_file in uploaded_files:
-            st.write(f"- {uploaded_file.name}")
+            if _is_supported_file(uploaded_file.name):
+                st.write(f"- {uploaded_file.name}")
+            else:
+                st.error(f"{uploaded_file.name} is not a supported audio type.")
     else:
         st.info("Upload at least one mix to begin.")
 
     if uploaded_files and analyze_clicked:
         results: list[MixAnalysisResult] = []
-        cache_dir = Path("outputs/cache")
 
         for uploaded_file in uploaded_files:
+            if not _is_supported_file(uploaded_file.name):
+                continue
             with st.spinner(f"Analyzing {uploaded_file.name}..."):
                 try:
-                    path = save_uploaded_file(uploaded_file, cache_dir)
-                    y, sr = load_audio(path)
-                    feature_df = analyze_audio_windows(
-                        y,
-                        sr,
-                        window_seconds=float(window_seconds),
-                        hop_seconds=float(hop_seconds),
+                    result = _analyze_uploaded_bytes(
+                        uploaded_file.name,
+                        bytes(uploaded_file.getbuffer()),
+                        float(window_seconds),
+                        float(hop_seconds),
+                        sensitivity,
+                        float(minimum_event_spacing),
                     )
-                    feature_df = assign_pressure_labels(feature_df)
-                    events = detect_events(
-                        feature_df,
-                        sensitivity=sensitivity,
-                        minimum_spacing_seconds=float(minimum_event_spacing),
-                    )
-                    duration = len(y) / sr if sr else 0.0
-                    summary = summarize_mix(feature_df, events, duration=duration)
-                    results.append(
-                        MixAnalysisResult(
-                            name=uploaded_file.name,
-                            duration=duration,
-                            sample_rate=sr,
-                            feature_df=feature_df,
-                            events=events,
-                            summary=summary,
-                        )
-                    )
+                    results.append(result)
                 except Exception as exc:
                     st.error(f"Could not analyze {uploaded_file.name}: {exc}")
 
@@ -163,6 +193,7 @@ with tabs[1]:
     if not results:
         st.info("Analyze an uploaded mix to see its plain-English report.")
     else:
+        _render_estimate_warning()
         for result in results:
             with st.container(border=True):
                 st.markdown(f"### {result.name}")
@@ -190,6 +221,7 @@ with tabs[2]:
     if not results:
         st.info("Analyze an uploaded mix to see detected key moments.")
     else:
+        _render_estimate_warning()
         selected = _select_result(results, "Key moments mix")
         if not selected.events:
             st.info("No strong event candidates were detected for this mix.")
@@ -202,6 +234,7 @@ with tabs[3]:
     if not results:
         st.info("Analyze an uploaded mix to see visual flow maps.")
     else:
+        _render_estimate_warning()
         selected = _select_result(results, "Visual flow mix")
         st.plotly_chart(
             make_flow_map(selected.feature_df, selected.events),
@@ -222,9 +255,13 @@ with tabs[4]:
     if len(results) < 2:
         st.info("Analyze at least two mixes to compare their flow.")
     else:
+        _render_estimate_warning()
         st.plotly_chart(make_comparison_strips(results), width="stretch")
         for line in _comparison_summary(results):
             st.write(line)
+        st.subheader("Mix Character Cards")
+        for profile in build_comparison_profiles(results):
+            _render_comparison_card(profile)
 
 with tabs[5]:
     st.subheader("Debug Data")
