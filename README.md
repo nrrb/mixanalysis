@@ -9,7 +9,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The first version supports uploading one or more MP3, WAV, or M4A files and displays a debug feature table for each analyzed mix.
+The current proof of concept supports uploading one or more MP3, WAV, or M4A files, then produces labeled timelines, event candidates, plain-English summaries, and debug feature tables.
 
 ## Current scope
 
@@ -19,11 +19,15 @@ Implemented:
 - Local uploaded-file cache.
 - Audio loading with `librosa`.
 - Windowed feature extraction with `pandas`.
+- Plain-English pressure labels.
+- Relief labels and possible-vocal proxy labels.
+- Deterministic mix summaries and learning notes.
+- Event detection for drops, relief, buildups, possible vocals, transitions, and sustained pressure.
+- Plotly flow maps, pressure silhouettes, and layered presence maps.
+- Multi-mix comparison strips and comparison summaries.
 - Debug data tab for inspecting extracted features.
 
 Not implemented yet:
 
-- Plain-English pressure labels.
-- Event detection.
-- Visual timelines.
-- Multi-mix comparison summaries.
+- Phase 6 refinements beyond the initial comparison view.
+- Polish items such as caching, screenshots, and broader error handling.

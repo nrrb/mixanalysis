@@ -2,6 +2,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from src.events import MixEvent
+
 
 @dataclass
 class MixAnalysisResult:
@@ -9,6 +11,8 @@ class MixAnalysisResult:
     duration: float
     sample_rate: int
     feature_df: pd.DataFrame
+    events: list[MixEvent]
+    summary: dict
 
 
 def format_duration(seconds: float) -> str:
