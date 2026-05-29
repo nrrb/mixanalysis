@@ -105,11 +105,12 @@ streamlit run app.py
 Then in the browser:
 
 1. Upload one or more MP3 files.
-2. Click an analyze button.
-3. View a plain-English summary for each mix.
-4. View an annotated visual timeline for each mix.
-5. View a list of key moments.
-6. If multiple mixes are uploaded, view a comparison page.
+2. For each uploaded file, label it as either a **goal-level mix** (a reference mix the user is aspiring toward) or an **aspiring mix** (one of the user's own mixes being studied). Exactly one goal-level mix is expected per session.
+3. Click an analyze button.
+4. View a plain-English summary for each mix.
+5. View an annotated visual timeline for each mix.
+6. View a list of key moments.
+7. If a goal-level mix and at least one aspiring mix are present, view a comparison page that contrasts each aspiring mix against the goal-level mix and offers plain-English suggestions for closing the gap.
 
 ## Proof-of-concept UI requirements
 
@@ -135,6 +136,20 @@ Use Streamlit tabs:
 6. `Debug Data`, collapsed or optional
 
 The `Debug Data` tab may show numbers for development, but the main user experience should avoid numeric interpretation.
+
+### Mix role labeling (Upload tab)
+
+After files are uploaded but before the analyze button is pressed, the `Upload` tab must let the user assign a **role** to each file:
+
+- `goal-level mix` — a reference mix the user is trying to sound more like.
+- `aspiring mix` — one of the user's own mixes being studied against the goal.
+
+Requirements:
+
+- Render one role control per uploaded file, for example a `st.radio` or `st.selectbox` keyed by the file name, defaulting to `aspiring mix`.
+- Encourage exactly one `goal-level mix`. If zero or more than one are selected, show a non-blocking warning (`st.warning`) but still allow analysis so the per-mix reports remain useful.
+- Persist the chosen role alongside each result so downstream tabs (especially `Compare Mixes`) can use it.
+- Add a `help=` tooltip explaining the difference between the two roles, consistent with the Phase 8 contextual-help convention.
 
 ## Audio loading
 
@@ -524,6 +539,7 @@ class MixAnalysisResult:
     feature_df: pd.DataFrame
     events: list[MixEvent]
     summary: dict
+    role: str = "aspiring"  # "goal" or "aspiring"
 ```
 
 ## Streamlit app layout
@@ -553,6 +569,23 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True,
 )
 
+# Assign a role to each uploaded file before analysis.
+roles = {}
+if uploaded_files:
+    st.subheader("Label each mix")
+    for uploaded_file in uploaded_files:
+        roles[uploaded_file.name] = st.radio(
+            uploaded_file.name,
+            ["aspiring mix", "goal-level mix"],
+            index=0,
+            horizontal=True,
+            key=f"role_{uploaded_file.name}",
+            help="Mark the reference mix you want to sound like as the goal-level mix; mark your own mixes as aspiring.",
+        )
+    goal_count = sum(1 for r in roles.values() if r == "goal-level mix")
+    if goal_count != 1:
+        st.warning("Pick exactly one goal-level mix to enable gap suggestions. You can still analyze without one.")
+
 with st.sidebar:
     window_seconds = st.slider("Analysis window", 5, 30, 10)
     hop_seconds = st.slider("Timeline detail", 2, 15, 5)
@@ -569,7 +602,8 @@ if uploaded_files and analyze_clicked:
             df = assign_pressure_labels(df)
             events = detect_events(df, sensitivity=sensitivity)
             summary = summarize_mix(df, events, duration=len(y) / sr)
-            results.append(MixAnalysisResult(uploaded_file.name, len(y) / sr, df, events, summary))
+            role = "goal" if roles.get(uploaded_file.name) == "goal-level mix" else "aspiring"
+            results.append(MixAnalysisResult(uploaded_file.name, len(y) / sr, df, events, summary, role=role))
 
     # Store in session state
     st.session_state["results"] = results
@@ -643,6 +677,65 @@ Mix A reaches full pressure earlier and stays more relentless.
 Mix B has more frequent relief pockets and a clearer wave shape.
 Mix C appears more transition-heavy, with more possible long-blend regions.
 ```
+
+### Goal vs. aspiring suggestions
+
+When exactly one mix is labeled `goal-level mix`, add a dedicated section that compares each `aspiring` mix against the goal and offers plain-English, actionable suggestions for closing the gap.
+
+Function:
+
+```python
+def suggest_toward_goal(goal: MixAnalysisResult, aspiring: MixAnalysisResult) -> dict:
+    """Compare one aspiring mix to the goal mix and return plain-English suggestions.
+
+    Returns:
+        {
+          "headline": "Closer to the goal than most, but the energy peaks too early",
+          "suggestions": [
+            "The goal mix waits until about two-thirds in before its biggest drop; "
+            "yours peaks in the first third. Try holding back your hardest section.",
+            "Your goal has roughly twice as many relief pockets. Add a breather "
+            "after long high-pressure runs to let the energy breathe.",
+          ],
+          "matched": [
+            "Your tempo stability and transition style already match the goal well.",
+          ],
+        }
+    """
+```
+
+Comparison rules (deterministic, no LLM for the first version). Compare summary-level, mix-wide characteristics rather than aligning timelines window-by-window:
+
+- **Pressure shape:** if the goal is wave-shaped but the aspiring mix is relentless, suggest adding relief; if the reverse, suggest sustaining energy longer.
+- **Relief frequency:** compare counts/density of relief sections and suggest adding or removing breathing room.
+- **Peak placement:** compare where the highest-pressure run falls (early/middle/late third) and suggest moving the climax.
+- **Vocal usage:** compare possible-vocal density and whether vocals cluster around relief/transitions.
+- **Transition style:** compare long-blend vs. abrupt-cut tendencies and suggest blending more or cutting more decisively.
+- **Buildup usage:** compare how often pressure rises gradually into peaks and suggest more deliberate buildups if the goal uses them.
+
+Output guidelines:
+
+- Phrase every suggestion as a concrete, encouraging action ("Try holding your biggest drop until later"), not a numeric diff.
+- Surface what already matches the goal under `matched`, so the user gets positive reinforcement, not only corrections.
+- Reuse the cautious confidence language from the rest of the app ("appears to", "tends to") since these are estimates.
+
+### Compare Mixes layout with a goal mix
+
+```txt
+Goal mix: reference_set_2024.mp3
+
+Aspiring: my_practice_set.mp3
+Headline: Strong energy, but it peaks too early to match the goal's slow build.
+Suggestions:
+- The goal mix saves its hardest drop for the final third; yours lands in the
+  first few minutes. Try arranging tracks so the biggest moment comes later.
+- The goal breathes more — it has noticeably more relief pockets. Add a reset
+  after your longest high-pressure run.
+Already matching:
+- Your tempo feels just as stable, and your transitions blend similarly.
+```
+
+If no goal-level mix is labeled, fall back to the neutral side-by-side comparison above and show a hint that labeling a goal mix unlocks tailored suggestions.
 
 ## Debug Data tab
 
@@ -811,6 +904,15 @@ Feature extraction dominated analysis time, so the pipeline was profiled and tun
 - Decode with `res_type="soxr_lq"` at `sr=22050` (exact 2:1 from 44.1 kHz).
 
 Results: on a real 38-minute mix, end-to-end time dropped from 40.76 s to 5.73 s (7.1x), with the analysis stage ~12x faster, identical 461 windows, and 32/35 events aligning within 5 s of the baseline. App-level parallelism across files was investigated and rejected as slower (the pipeline is memory-bandwidth bound and NumPy/SciPy already use multiple cores via macOS Accelerate). Full benchmarks, the quality comparison, and rejected ideas live in [OPTIMIZATIONS.md](OPTIMIZATIONS.md).
+
+### Phase 10: Goal vs. aspiring mix suggestions
+
+- Add a per-file role selector (`goal-level mix` / `aspiring mix`) to the `Upload` tab, between upload and the analyze button.
+- Warn (non-blocking) when not exactly one goal mix is selected.
+- Add a `role` field to `MixAnalysisResult` and populate it during analysis.
+- Implement `suggest_toward_goal(goal, aspiring)` in `src/compare.py` using the deterministic comparison rules above.
+- In the `Compare Mixes` tab, when a goal mix exists, render one suggestion card per aspiring mix (headline, suggestions, already-matching), and fall back to the neutral comparison otherwise.
+- Reuse the cautious confidence language and `format_time` conventions.
 
 ## Important implementation details
 
