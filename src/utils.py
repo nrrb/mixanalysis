@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from src.events import MixEvent
+from src.rhythm import RhythmResult
 
 
 @dataclass
@@ -15,6 +16,7 @@ class MixAnalysisResult:
     summary: dict
     role: str = "aspiring"  # "goal" or "aspiring"
     analysis_mode: str = "fast"  # "fast" or "deep" (see Phase 12)
+    rhythm: RhythmResult | None = None  # beats/downbeats/tempo curve (Phase 13)
 
 
 def format_duration(seconds: float) -> str:

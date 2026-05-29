@@ -31,6 +31,7 @@ def detect_events(
     events.extend(_detect_possible_vocals(df))
     events.extend(_detect_transitions(df, settings, minimum_spacing_seconds))
     events.extend(_detect_sustained_pressure(df))
+    events.extend(_detect_tempo_changes(df, settings, minimum_spacing_seconds))
 
     events.sort(key=lambda event: (event.start, event.event_type))
     return _limit_clustered_events(events, spacing_seconds=8.0)
@@ -43,6 +44,7 @@ def _settings(sensitivity: str) -> dict[str, float]:
             "transition_change": 0.55,
             "buildup_gain": 0.32,
             "relief_max": 0.30,
+            "tempo_change": 5.0,
         }
     if sensitivity == "sensitive":
         return {
@@ -50,12 +52,14 @@ def _settings(sensitivity: str) -> dict[str, float]:
             "transition_change": 0.38,
             "buildup_gain": 0.20,
             "relief_max": 0.45,
+            "tempo_change": 2.5,
         }
     return {
         "drop_jump": 0.28,
         "transition_change": 0.46,
         "buildup_gain": 0.26,
         "relief_max": 0.38,
+        "tempo_change": 4.0,
     }
 
 
@@ -243,6 +247,54 @@ def _detect_sustained_pressure(df: pd.DataFrame) -> list[MixEvent]:
     return events
 
 
+def _detect_tempo_changes(
+    df: pd.DataFrame,
+    settings: dict[str, float],
+    minimum_spacing_seconds: float,
+) -> list[MixEvent]:
+    """Flag windows where the local tempo shifts notably (often a track change).
+
+    Relies on the per-window ``local_tempo`` refined from the rhythm engine
+    (Phase 13). When tempo could not be estimated the column is constant or NaN,
+    and no events are produced.
+    """
+    if "local_tempo" not in df:
+        return []
+    tempo = pd.to_numeric(df["local_tempo"], errors="coerce").to_numpy()
+    if tempo.size < 2 or not np.isfinite(tempo).any():
+        return []
+
+    threshold = settings.get("tempo_change", 4.0)
+    events = []
+    last_start = -minimum_spacing_seconds
+    for idx in range(1, len(df)):
+        previous, current = tempo[idx - 1], tempo[idx]
+        if not (np.isfinite(previous) and np.isfinite(current)):
+            continue
+        delta = current - previous
+        if abs(delta) < threshold:
+            continue
+        start = float(df.iloc[idx]["start_time"])
+        if start - last_start < minimum_spacing_seconds:
+            continue
+        direction = "lifts" if delta > 0 else "eases"
+        events.append(
+            MixEvent(
+                start=start,
+                end=float(df.iloc[idx]["end_time"]),
+                event_type="tempo change candidate",
+                title="Tempo change candidate",
+                description=(
+                    f"The detected tempo {direction} noticeably here, which often "
+                    "lines up with a track change."
+                ),
+                confidence="medium" if abs(delta) >= threshold + 3.0 else "low",
+            )
+        )
+        last_start = start
+    return events
+
+
 def _runs(mask: pd.Series | np.ndarray) -> list[tuple[int, int]]:
     values = np.asarray(mask, dtype=bool)
     runs = []
@@ -290,6 +342,7 @@ def _limit_clustered_events(events: list[MixEvent], spacing_seconds: float) -> l
         "relief section": 3,
         "sustained pressure run": 4,
         "possible vocal section": 5,
+        "tempo change candidate": 6,
     }
     kept: list[MixEvent] = []
     for event in sorted(events, key=lambda item: (item.start, priority.get(item.event_type, 9))):

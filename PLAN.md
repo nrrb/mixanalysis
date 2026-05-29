@@ -46,15 +46,10 @@ numpy
 pandas
 scipy
 plotly
-kaleido
 soundfile
 pydub
 python-dotenv
 ```
-
-`kaleido` is required for static image export — it lets Plotly render figures to
-PNG without a browser, which powers the shareable social-media images
-(see [Visual 5](#visual-5-shareable-social-media-images) and Phase 11).
 
 Optional later libraries:
 
@@ -474,10 +469,9 @@ Use Plotly for interactive visuals inside Streamlit.
 
 ### Visual design language and color scheme
 
-The visuals — especially the shareable social-media images — should look
-modern, vibrant, and instantly "scroll-stopping," not like a default scientific
-chart. Adopt a single, consistent design language across every figure and every
-exported image.
+The visuals should look modern, vibrant, and instantly "scroll-stopping," not
+like a default scientific chart. Adopt a single, consistent design language
+across every figure.
 
 **Overall look:**
 
@@ -519,8 +513,8 @@ everywhere so on-screen charts and exported images always match.
 - One bold display font for headlines and one clean sans for labels/captions
   (use Streamlit/Plotly defaults if custom fonts add friction in the POC, but
   keep weights and sizes consistent).
-- A single accent/brand color (`#FF2D78`) for the watermark, the app name, and
-  call-to-action elements.
+- A single accent/brand color (`#FF2D78`) for the app name and call-to-action
+  elements.
 
 Centralize all of the above (palette dict, colorscale, background, fonts,
 margins) in one place in `src/visuals.py` so a future theme change is a one-line
@@ -597,84 +591,6 @@ Comparison should make these visible:
 - Which mix is more vocal-heavy.
 - Which mix has longer high-pressure runs.
 - Which mix looks more wave-shaped vs relentless.
-
-### Visual 5: Shareable social-media images
-
-Export the app's visuals as standalone image files designed to be posted on
-social media, not just viewed in the browser. Every visual flow and comparison
-view should be renderable to an image a user can download and share.
-
-Cover both the per-mix visuals and every comparison feature:
-
-- Per mix: the flow map, the pressure silhouette, and the layered presence map.
-- Comparison: the stacked comparison strips, and — when a goal mix is present —
-  the goal-vs-aspiring suggestion cards.
-
-Each shareable image must be produced in **two aspect ratios**:
-
-- **Square (1:1)** — for feed posts (Instagram, X). Target 1080×1080 px.
-- **Vertical (9:16)** — for stories/Reels/TikTok/Shorts. Target 1080×1920 px.
-
-Requirements:
-
-- Render at high resolution (`scale=2` or explicit pixel dimensions) so text and
-  markers stay crisp when platforms re-compress the image.
-- Re-lay-out for the target ratio rather than naively stretching a wide timeline:
-  for 9:16, stack lanes/strips vertically or wrap the timeline so it reads well
-  in a tall frame; for 1:1, use a balanced square composition.
-- Bake in a readable title (mix name and/or "Goal vs <aspiring>"), the key tags,
-  and a small headline so the image is self-explanatory out of context.
-- Keep the plain-English, no-raw-numbers rule: the shared image should show
-  labels, colored blocks, event markers, and short captions — never bare feature
-  values.
-- Use `format_time` for any timestamps baked into the image, and apply the same
-  `make_time_ticks` axis labels as the on-screen charts.
-- Add a subtle, consistent watermark/footer (app name) so shared images are
-  attributable.
-- Follow the [Visual design language and color scheme](#visual-design-language-and-color-scheme):
-  dark vibrant base, the shared pressure gradient, and glowing event accents. The
-  social images are the showcase for this look — lean into the gradients, glow,
-  and bold headline type so they stand out in a feed.
-
-Suggested functions in `src/visuals.py`:
-
-```python
-def render_social_image(
-    fig: "plotly.graph_objects.Figure",
-    aspect: str,            # "square" or "9x16"
-    title: str,
-    subtitle: str = "",
-) -> bytes:
-    """Re-lay-out a flow/comparison figure for the target aspect ratio and
-    return PNG bytes suitable for social sharing (high-res, titled, watermarked)."""
-
-
-def export_shareable_images(
-    result: "MixAnalysisResult",
-    out_dir: Path,
-) -> list[Path]:
-    """Write square and 9:16 PNGs for a single mix's flow visuals and return
-    the written paths."""
-
-
-def export_comparison_images(
-    results: list["MixAnalysisResult"],
-    out_dir: Path,
-) -> list[Path]:
-    """Write square and 9:16 PNGs for the comparison strips and any
-    goal-vs-aspiring suggestion cards."""
-```
-
-Use `fig.to_image(format="png", width=..., height=..., scale=2)` (Plotly +
-`kaleido`) for rendering. Suggestion cards that are not Plotly figures can be
-composed onto a sized canvas (e.g. a styled Plotly/HTML-to-image layout) so they
-match the other images.
-
-In the Streamlit UI, expose this with `st.download_button` controls — one per
-visual per ratio, or a single "Download shareable images" action that writes the
-full set to `outputs/` and offers them for download. Place the per-mix downloads
-near each visual on the `Visual Flow` tab and the comparison downloads on the
-`Compare Mixes` tab.
 
 ## Data model
 
@@ -918,9 +834,6 @@ The POC is complete when:
 7. The app can compare at least two uploaded mixes with stacked visual strips.
 8. The main UI avoids requiring users to interpret raw numbers.
 9. Debug data is available separately for development.
-10. The app can export each mix's visual flow and every comparison feature as
-    downloadable images in both square (1:1) and 9:16 ratios, suitable for
-    sharing on social media.
 
 ## Suggested implementation phases for Codex
 
@@ -1073,28 +986,12 @@ Results: on a real 38-minute mix, end-to-end time dropped from 40.76 s to 5.73 s
 - In the `Compare Mixes` tab, when a goal mix exists, render one suggestion card per aspiring mix (headline, suggestions, already-matching), and fall back to the neutral comparison otherwise.
 - Reuse the cautious confidence language and `format_time` conventions.
 
-### Phase 11: Shareable social-media images
+### Phase 11: Shareable social-media images (removed)
 
-Generate downloadable image files of the visual flow for each mix and of every
-comparison feature, sized for social media in both square (1:1) and 9:16 ratios.
-See [Visual 5](#visual-5-shareable-social-media-images) for the full spec.
-
-- Add `kaleido` to `requirements.txt` for browserless Plotly PNG export.
-- Apply the [Visual design language and color scheme](#visual-design-language-and-color-scheme)
-  (dark vibrant base, shared pressure gradient, glowing accents, bold headline
-  type) consistently across on-screen charts and exported images.
-- Implement `render_social_image`, `export_shareable_images`, and
-  `export_comparison_images` in `src/visuals.py`.
-- Render at 1080×1080 (square) and 1080×1920 (9:16) with `scale=2`, re-laying-out
-  tall figures rather than stretching wide timelines.
-- Bake in a title, headline, key tags, and a consistent app-name watermark; reuse
-  `format_time` and `make_time_ticks` so baked-in time labels match the on-screen
-  charts.
-- Wire up `st.download_button` controls: per-mix flow visuals on the
-  `Visual Flow` tab, and comparison strips plus goal-vs-aspiring cards on the
-  `Compare Mixes` tab, each offered in both ratios.
-- Keep the no-raw-numbers rule: shared images use labels, colored blocks, markers,
-  and short captions only.
+This phase was implemented and later removed: PNG export via `kaleido` proved
+unreliable, so the feature, its `requirements.txt` dependency, and the
+`render_social_image`/`export_*` helpers were dropped. Phases 12+ keep their
+original numbers so existing references stay valid.
 
 ### Phase 12: Analysis modes and optional "Deep" dependency scaffolding
 
@@ -1278,8 +1175,8 @@ def vocal_activity(vocal_stem, mix, sr, *, hop_seconds: float) -> "pd.Series":
 - Optionally reuse the accompaniment stem to sharpen `bass_pressure` and the
   Phase 14 key estimate (cleaner harmony with vocals removed) — mark as a stretch.
 - UI: a Deep-mode badge on measured vocal events; if Demucs is unavailable, fall
-  back to the proxy with the Phase 12 message. Lanes and shareable images use the
-  measured vocal regions when present.
+  back to the proxy with the Phase 12 message. Lanes use the measured vocal
+  regions when present.
 
 ## Important implementation details
 
@@ -1356,9 +1253,6 @@ After the proof of concept works, consider adding:
 - ~~Better local tempo and downbeat detection.~~ Now planned — see [Phase 13](#phase-13-improved-local-tempo-and-downbeat-detection).
 - ~~Key detection with confidence and Camelot labels.~~ Now planned — see [Phase 14](#phase-14-per-segment-key-detection-with-confidence-and-camelot-labels).
 - Exportable HTML reports.
-- Animated/video versions of the shareable social images (e.g. an MP4 story that
-  scrubs through the timeline). The static square and 9:16 PNG export is now part
-  of the POC scope — see Phase 11.
 - Manual correction/editing of detected events.
 - Tracklist support.
 - Rekordbox cue export.

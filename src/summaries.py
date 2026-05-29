@@ -37,7 +37,12 @@ def assign_pressure_labels(df: pd.DataFrame) -> pd.DataFrame:
     return labeled
 
 
-def summarize_mix(df: pd.DataFrame, events: list[MixEvent], duration: float) -> dict:
+def summarize_mix(
+    df: pd.DataFrame,
+    events: list[MixEvent],
+    duration: float,
+    rhythm=None,
+) -> dict:
     """Return a deterministic plain-English summary, tags, and learning notes."""
     if df.empty:
         return {
@@ -79,7 +84,7 @@ def summarize_mix(df: pd.DataFrame, events: list[MixEvent], duration: float) -> 
     tags = [shape, relief_tag, vocal_tag]
     if transition_tag:
         tags.append(transition_tag)
-    tags.append("tempo appears mostly stable")
+    tags.append(_tempo_tag(rhythm, df))
 
     return {
         "headline": headline,
@@ -184,6 +189,26 @@ def _transition_tag(events: list[MixEvent]) -> str | None:
     if abrupt:
         return "cut-heavy style"
     return "transition-marked"
+
+
+def _tempo_tag(rhythm, df: pd.DataFrame) -> str:
+    """Tempo tag from the rhythm engine, with a df-only fallback.
+
+    Prefers the Phase 13 ``RhythmResult.tempo_tag``. When no rhythm is supplied
+    (e.g. older callers), derive a coarse tag from the per-window ``local_tempo``
+    so the tag is never the old hardcoded string.
+    """
+    if rhythm is not None:
+        return rhythm.tempo_tag
+    if "local_tempo" not in df:
+        return "tempo unclear"
+    tempo = pd.to_numeric(df["local_tempo"], errors="coerce").dropna()
+    if tempo.empty:
+        return "tempo unclear"
+    spread = float(tempo.quantile(0.9) - tempo.quantile(0.1))
+    if spread <= 2.0:
+        return f"steady tempo (~{int(round(tempo.median()))} BPM)"
+    return "tempo varies"
 
 
 def _headline(shape: str, high_share: float, relief_share: float) -> str:

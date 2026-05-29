@@ -1,25 +1,20 @@
-import json
 from pathlib import Path
 
-import plotly.graph_objects as go
 import streamlit as st
 
 from src.audio_io import load_audio, save_uploaded_bytes
 from src.compare import build_comparison_profiles, suggest_toward_goal, summarize_comparison
-from src.deep import probe_capabilities, resolve_analysis_mode
+from src.deep import has_beat_this, probe_capabilities, resolve_analysis_mode
 from src.events import MixEvent, detect_events
 from src.features import analyze_audio_windows
+from src.rhythm import estimate_rhythm, window_local_tempo
 from src.summaries import assign_pressure_labels, summarize_mix
 from src.utils import MixAnalysisResult, format_duration
 from src.visuals import (
-    SOCIAL_ASPECT_LABELS,
-    SOCIAL_SIZES,
     make_comparison_strips,
     make_flow_map,
     make_layered_presence_map,
     make_pressure_silhouette,
-    make_suggestion_card_figure,
-    render_social_image,
 )
 
 
@@ -56,6 +51,18 @@ def _analyze_uploaded_bytes(
     if feature_df.empty:
         raise ValueError("The audio did not produce any analysis windows.")
 
+    # Phase 13: estimate beats/downbeats/local tempo and refine the per-window
+    # local_tempo before labels/events so tempo-change detection can use it. The
+    # beat_this neural tracker is used only in Deep mode when installed; otherwise
+    # this falls back to librosa inside estimate_rhythm.
+    use_beat_this = analysis_mode == "deep" and has_beat_this()
+    rhythm = estimate_rhythm(y, sr, use_beat_this=use_beat_this)
+    feature_df["local_tempo"] = window_local_tempo(
+        rhythm,
+        feature_df["start_time"].to_numpy(),
+        feature_df["end_time"].to_numpy(),
+    )
+
     feature_df = assign_pressure_labels(feature_df)
     events = detect_events(
         feature_df,
@@ -63,7 +70,7 @@ def _analyze_uploaded_bytes(
         minimum_spacing_seconds=minimum_spacing_seconds,
     )
     duration = len(y) / sr if sr else 0.0
-    summary = summarize_mix(feature_df, events, duration=duration)
+    summary = summarize_mix(feature_df, events, duration=duration, rhythm=rhythm)
     return MixAnalysisResult(
         name=file_name,
         duration=duration,
@@ -72,6 +79,7 @@ def _analyze_uploaded_bytes(
         events=events,
         summary=summary,
         analysis_mode=analysis_mode,
+        rhythm=rhythm,
     )
 
 
@@ -95,12 +103,6 @@ def _comparison_summary(results: list[MixAnalysisResult]) -> list[str]:
 
 def _is_supported_file(file_name: str) -> bool:
     return Path(file_name).suffix.lower() in SUPPORTED_EXTENSIONS
-
-
-def _render_estimate_warning() -> None:
-    st.warning(
-        "These labels are estimates from audio features. Treat drops, vocals, transitions, and keys as study cues, not facts.",
-    )
 
 
 def _render_comparison_card(profile) -> None:
@@ -127,82 +129,12 @@ def _percent(value: float) -> str:
     return f"{round(value * 100):.0f}%"
 
 
-def _safe_stem(name: str) -> str:
-    stem = Path(name).stem.lower()
-    return "".join(ch if ch.isalnum() else "-" for ch in stem).strip("-") or "mix"
-
-
-@st.cache_data(show_spinner=False)
-def _social_png(
-    fig_json: str,
-    aspect: str,
-    title: str,
-    subtitle: str,
-    lanes: int,
-    fit_plot: bool,
-    keep_annotations: bool,
-) -> bytes:
-    """Render a figure (passed as JSON so it is cacheable) to social PNG bytes."""
-    fig = go.Figure(json.loads(fig_json))
-    return render_social_image(
-        fig,
-        aspect,
-        title,
-        subtitle,
-        lanes=lanes,
-        fit_plot=fit_plot,
-        keep_annotations=keep_annotations,
-    )
-
-
-def _render_share_section(specs: list[dict], key_prefix: str) -> None:
-    """Render a 'shareable social images' block with download buttons.
-
-    Image generation (kaleido) is gated behind a button so it only runs when the
-    user wants it, and cached so it is not repeated on every rerun.
-    """
-    st.markdown("#### Shareable social images")
-    st.caption(
-        "High-resolution square (1:1) and vertical (9:16) PNGs in the app's color "
-        "theme, ready to post to social media."
-    )
-    prepared_key = f"share_ready_{key_prefix}"
-    if st.button("Prepare shareable images", key=f"prep_{key_prefix}"):
-        st.session_state[prepared_key] = True
-    if not st.session_state.get(prepared_key):
-        return
-
-    with st.spinner("Rendering shareable images..."):
-        for spec in specs:
-            fig_json = spec["fig"].to_json()
-            st.markdown(f"**{spec['label']}**")
-            cols = st.columns(len(SOCIAL_SIZES))
-            for col, aspect in zip(cols, SOCIAL_SIZES):
-                png = _social_png(
-                    fig_json,
-                    aspect,
-                    spec["title"],
-                    spec.get("subtitle", ""),
-                    spec.get("lanes", 1),
-                    spec.get("fit_plot", True),
-                    spec.get("keep_annotations", False),
-                )
-                col.download_button(
-                    SOCIAL_ASPECT_LABELS[aspect],
-                    data=png,
-                    file_name=f"{spec['stem']}_{aspect}.png",
-                    mime="image/png",
-                    key=f"{key_prefix}_{spec['stem']}_{aspect}",
-                )
-
-
 st.set_page_config(page_title="DJ Mix Flow Analyzer", layout="wide")
 
 st.title("DJ Mix Flow Analyzer")
 st.caption(
     "Upload DJ mixes and study their pressure, relief, drops, vocals, and pacing as visual flow maps."
 )
-_render_estimate_warning()
 
 with st.sidebar:
     st.header("Analysis Controls")
@@ -301,9 +233,16 @@ with tabs[0]:
     roles: dict[str, str] = {}
     if uploaded_files:
         st.write(f"{len(uploaded_files)} file(s) ready for analysis.")
-        st.markdown("**Label each mix**")
         for uploaded_file in uploaded_files:
-            if _is_supported_file(uploaded_file.name):
+            if not _is_supported_file(uploaded_file.name):
+                st.error(f"{uploaded_file.name} is not a supported audio type.")
+
+        supported_files = [f for f in uploaded_files if _is_supported_file(f.name)]
+        # Role labeling only matters when comparing multiple mixes; with a single
+        # mix there is nothing to compare against, so skip the radios entirely.
+        if len(supported_files) > 1:
+            st.markdown("**Label each mix**")
+            for uploaded_file in supported_files:
                 roles[uploaded_file.name] = st.radio(
                     uploaded_file.name,
                     ["aspiring mix", "goal-level mix"],
@@ -316,15 +255,13 @@ with tabs[0]:
                         "mix labeled, the Compare Mixes tab suggests how to close the gap."
                     ),
                 )
-            else:
-                st.error(f"{uploaded_file.name} is not a supported audio type.")
 
-        goal_count = sum(1 for role in roles.values() if role == "goal-level mix")
-        if goal_count != 1:
-            st.warning(
-                "Pick exactly one goal-level mix to unlock tailored suggestions. "
-                "You can still analyze without one."
-            )
+            goal_count = sum(1 for role in roles.values() if role == "goal-level mix")
+            if goal_count != 1:
+                st.warning(
+                    "Pick exactly one goal-level mix to unlock tailored suggestions. "
+                    "You can still analyze without one."
+                )
     else:
         st.info("Upload at least one mix to begin.")
 
@@ -376,7 +313,6 @@ with tabs[1]:
     if not results:
         st.info("Analyze an uploaded mix to see its plain-English report.")
     else:
-        _render_estimate_warning()
         for result in results:
             with st.container(border=True):
                 st.markdown(f"### {result.name}")
@@ -404,7 +340,6 @@ with tabs[2]:
     if not results:
         st.info("Analyze an uploaded mix to see detected key moments.")
     else:
-        _render_estimate_warning()
         selected = _select_result(results, "Key moments mix")
         if not selected.events:
             st.info("No strong event candidates were detected for this mix.")
@@ -417,48 +352,28 @@ with tabs[3]:
     if not results:
         st.info("Analyze an uploaded mix to see visual flow maps.")
     else:
-        _render_estimate_warning()
         selected = _select_result(results, "Visual flow mix")
+        has_downbeats = selected.rhythm is not None and len(selected.rhythm.downbeats) > 0
+        show_beats = False
+        if has_downbeats:
+            show_beats = st.checkbox(
+                "Show beat grid on the pressure shape",
+                value=False,
+                help=(
+                    "Overlay faint bar lines (downbeats) on the pressure silhouette. "
+                    f"Beats from the {selected.rhythm.source} tracker."
+                ),
+            )
         flow_fig = make_flow_map(selected.feature_df, selected.events)
-        silhouette_fig = make_pressure_silhouette(selected.feature_df, selected.events)
+        silhouette_fig = make_pressure_silhouette(
+            selected.feature_df,
+            selected.events,
+            downbeats=selected.rhythm.downbeats if show_beats else None,
+        )
         presence_fig = make_layered_presence_map(selected.feature_df, selected.events)
         st.plotly_chart(flow_fig, width="stretch")
         st.plotly_chart(silhouette_fig, width="stretch")
         st.plotly_chart(presence_fig, width="stretch")
-
-        st.divider()
-        disp = Path(selected.name).stem
-        stem = _safe_stem(selected.name)
-        headline = selected.summary.get("headline", "")
-        _render_share_section(
-            [
-                {
-                    "label": "Flow map",
-                    "fig": flow_fig,
-                    "title": f"{disp} · Flow Map",
-                    "subtitle": headline,
-                    "lanes": 1,
-                    "stem": f"{stem}_flow",
-                },
-                {
-                    "label": "Pressure shape",
-                    "fig": silhouette_fig,
-                    "title": f"{disp} · Pressure Shape",
-                    "subtitle": headline,
-                    "lanes": 1,
-                    "stem": f"{stem}_silhouette",
-                },
-                {
-                    "label": "Presence map",
-                    "fig": presence_fig,
-                    "title": f"{disp} · Presence Map",
-                    "subtitle": headline,
-                    "lanes": 5,
-                    "stem": f"{stem}_presence",
-                },
-            ],
-            key_prefix=f"flow_{stem}",
-        )
 
 with tabs[4]:
     st.subheader("Compare Mixes")
@@ -466,20 +381,8 @@ with tabs[4]:
     if len(results) < 2:
         st.info("Analyze at least two mixes to compare their flow.")
     else:
-        _render_estimate_warning()
         comparison_fig = make_comparison_strips(results)
         st.plotly_chart(comparison_fig, width="stretch")
-
-        share_specs = [
-            {
-                "label": "Comparison strips",
-                "fig": comparison_fig,
-                "title": "Mix Comparison",
-                "subtitle": "Pressure flow, side by side",
-                "lanes": len(results),
-                "stem": "comparison_strips",
-            }
-        ]
 
         goal_mixes = [result for result in results if result.role == "goal"]
         aspiring_mixes = [result for result in results if result.role != "goal"]
@@ -500,16 +403,6 @@ with tabs[4]:
                         st.markdown("**Already matching**")
                         for line in advice["matched"]:
                             st.write(f"- {line}")
-                share_specs.append(
-                    {
-                        "label": f"Suggestions: {Path(aspiring.name).stem}",
-                        "fig": make_suggestion_card_figure(goal.name, aspiring.name, advice),
-                        "title": f"{Path(aspiring.name).stem} → Goal",
-                        "fit_plot": False,
-                        "keep_annotations": True,
-                        "stem": f"suggestions_{_safe_stem(aspiring.name)}",
-                    }
-                )
         else:
             st.info(
                 "Label exactly one mix as the goal-level mix on the Upload tab to unlock "
@@ -522,9 +415,6 @@ with tabs[4]:
         st.subheader("Mix Character Cards")
         for profile in build_comparison_profiles(results):
             _render_comparison_card(profile)
-
-        st.divider()
-        _render_share_section(share_specs, key_prefix="compare")
 
 with tabs[5]:
     st.subheader("Debug Data")
@@ -540,4 +430,12 @@ with tabs[5]:
             f"Duration: {format_duration(selected.duration)} | "
             f"Windows: {len(selected.feature_df)}"
         )
+        if selected.rhythm is not None:
+            rhythm = selected.rhythm
+            bpm = rhythm.display_tempo
+            st.write(
+                f"Rhythm ({rhythm.source}): {rhythm.stability} | "
+                f"~{bpm} BPM | {len(rhythm.beats)} beats, "
+                f"{len(rhythm.downbeats)} downbeats"
+            )
         st.dataframe(selected.feature_df, width="stretch")
